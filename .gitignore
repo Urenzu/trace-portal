@@ -1,0 +1,50 @@
+# Built binary. Anchored: an unanchored name also matches the cmd/ package
+# directory, and an unanchored suffix pattern matches source files that happen
+# to share the prefix.
+/trace-portal
+/trace-portal.exe
+/dist/
+
+# Go build and coverage output. These are root-anchored on purpose: a bare
+# "coverage.*" also matches internal/source/coverage.go, which is source.
+*.exe
+*.test
+/coverage.out
+/coverage.html
+vendor/
+
+# Editor backups
+*~
+*.swp
+*.orig
+
+# Frontend. The built bundle under internal/web/dist IS committed, so that
+# `go build` works without Node installed and the binary always ships a UI.
+node_modules/
+web/.vite/
+web/tsconfig.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# Captured traces. Local-first means real prompts and API payloads can live
+# here. Never commit them.
+/.trace-portal/
+*.jsonl
+*.parquet
+blobs/
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+
+# Notes kept out of the repository
+goal.md
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

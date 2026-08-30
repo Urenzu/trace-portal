@@ -1,0 +1,15 @@
+# Normalize to LF in the repository; Git still checks out native endings.
+* text=auto eol=lf
+
+*.go text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+
+*.png binary
+*.jpg binary
+*.gz binary
+*.parquet binary
