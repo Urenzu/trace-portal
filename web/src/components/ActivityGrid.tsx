@@ -64,13 +64,18 @@ export function ActivityGrid({
   days,
   from,
   to,
+  since,
 }: {
   days: DayActivity[];
   /** First and last day of the span to draw, as YYYY-MM-DD. The span comes from
    *  the selected window rather than from the data, so a week whose last three
-   *  days are empty still draws as a week. */
+   *  days are empty still draws as a week, and a year draws as a year. */
   from: string;
   to: string;
+  /** First day the archive covers. Anything before it had no chance of being
+   *  recorded, which is a different claim from a day that simply holds nothing,
+   *  so those cells get their own state. */
+  since?: string;
 }) {
   // The per-day figures are the whole reason to draw this, so they get the same
   // tooltip the timeline uses rather than a native title: a second's hover delay
@@ -87,6 +92,11 @@ export function ActivityGrid({
     days.reduce((sum, d) => sum + d.turns, 0),
     1,
   );
+
+  // One place decides what a cell is, so the two layouts cannot disagree.
+  const covered = (key: string) => since === undefined || key >= since;
+  const classOf = (key: string, turns: number) =>
+    covered(key) ? `cell l${level(turns, max)}` : "cell none";
   const spanDays =
     Math.round((last.getTime() - first.getTime()) / 86_400_000) + 1;
 
@@ -101,7 +111,13 @@ export function ActivityGrid({
       x={hover.x}
       y={hover.y}
       title={label(hover.date)}
-      subtitle={hover.day ? undefined : "nothing recorded"}
+      subtitle={
+        hover.day
+          ? undefined
+          : covered(keyOf(hover.date))
+            ? "nothing recorded"
+            : "before this archive begins"
+      }
       rows={
         hover.day
           ? [
@@ -124,6 +140,12 @@ export function ActivityGrid({
         <span key={l} className={`cell l${l}`} />
       ))}
       <span>{max.toLocaleString()} turns</span>
+      {since !== undefined && from < since && (
+        <>
+          <span className="cell none" style={{ marginLeft: 12 }} />
+          <span>none before {label(parseDay(since))}</span>
+        </>
+      )}
     </div>
   );
 
@@ -151,7 +173,7 @@ export function ActivityGrid({
             return (
               <div className="strip-day" key={keyOf(date)}>
                 <span
-                  className={`cell l${level(day?.turns ?? 0, max)}`}
+                  className={classOf(keyOf(date), day?.turns ?? 0)}
                   onMouseEnter={show}
                   onMouseMove={show}
                 />
@@ -239,7 +261,7 @@ export function ActivityGrid({
               return (
                 <span
                   key={c.key}
-                  className={`cell l${level(day?.turns ?? 0, max)}`}
+                  className={classOf(c.key, day?.turns ?? 0)}
                   onMouseEnter={show}
                   onMouseMove={show}
                 />

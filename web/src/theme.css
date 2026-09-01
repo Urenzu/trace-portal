@@ -1046,10 +1046,17 @@ pre.payload {
   background: var(--grid);
 }
 
-/* Padding to the week boundary is a hole, not an empty day: an unrecorded day
-   and a day outside the archive are different claims. */
+/* Padding to the week boundary is a hole: it is not a day in the span at all. */
 .cell.out {
   background: none;
+}
+
+/* A day before the archive begins. Outlined rather than filled, because it is
+   not a quiet day — nothing could have been recorded then, and filling it the
+   same as a day you simply did not work would claim otherwise. */
+.cell.none {
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--grid);
 }
 
 .cell.l0 {

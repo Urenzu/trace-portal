@@ -37,12 +37,20 @@ function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function shortDate(key: string): string {
+function shortDate(key: string, withYear = false): string {
   return parseDay(key).toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
+    year: withYear ? "numeric" : undefined,
     timeZone: "UTC",
   });
+}
+
+/** A range, carrying years only when it crosses one — "Sep 2 – Sep 1" is a
+ *  year-long window that reads like a typo. */
+function dateRange(from: string, to: string): string {
+  const crossesYear = from.slice(0, 4) !== to.slice(0, 4);
+  return `${shortDate(from, crossesYear)} – ${shortDate(to, crossesYear)}`;
 }
 
 /** Whole calendar days between two day keys, inclusive of both ends. */
@@ -84,9 +92,12 @@ export function DataCoverage({
     .toISOString()
     .slice(0, 10);
 
-  // Clamped to where the archive begins. A year-long window over a month of
-  // history would otherwise be eleven months of blank cells.
-  const from = windowStart < earliest ? earliest : windowStart;
+  // The window is drawn in full, not trimmed to where the data happens to
+  // start: a year view that renders as a month is not a year view. Days before
+  // the archive begins are drawn as their own state rather than as quiet ones —
+  // "nothing was recorded" and "nothing could have been recorded" are different
+  // claims, and only the first says anything about how the agent was used.
+  const from = windowStart;
   const to = today < earliest ? earliest : today;
 
   const shown: DayActivity[] = all.filter((d) => d.day >= from && d.day <= to);
@@ -129,7 +140,7 @@ export function DataCoverage({
     <div className="card" style={{ marginBottom: 14 }}>
       <CardHead
         title="What's captured"
-        meta={`${shortDate(from)} – ${shortDate(to)}${clamped ? " · all history" : ""}`}
+        meta={`${dateRange(from, to)}${clamped ? ` · captured from ${shortDate(earliest)}` : ""}`}
         action={
           hasDetail ? (
             <Disclosure
@@ -148,7 +159,9 @@ export function DataCoverage({
         <Stat
           label="Active days"
           value={shown.length.toLocaleString()}
-          note={`of ${spanDays}`}
+          note={
+            clamped ? `of ${spanOf(earliest, to)} captured` : `of ${spanDays}`
+          }
         />
         <Stat
           label="Busiest day"
@@ -161,7 +174,9 @@ export function DataCoverage({
         />
       </div>
 
-      {shown.length > 0 && <ActivityGrid days={shown} from={from} to={to} />}
+      {shown.length > 0 && (
+        <ActivityGrid days={shown} from={from} to={to} since={earliest} />
+      )}
 
       {open && (
         <div className="cov-detail" id="coverage-detail">
