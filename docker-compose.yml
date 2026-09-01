@@ -1,0 +1,96 @@
+# The deployment shape, runnable on a laptop.
+#
+# The point of this file is that local development and production are the same
+# architecture rather than two things that have to be kept in agreement. Your
+# collector runs on the host, tails your own transcripts, and ships them to a
+# server in a container that writes to Postgres and compacts to object storage —
+# which is exactly what a deployed instance does, differing only in where it
+# runs and who signs in.
+#
+#   docker compose up -d
+#   trace-portal login -server http://localhost:8317
+#
+# Everything here is development-grade. The credentials are fixed and public,
+# the object store is MinIO rather than S3, and there is no TLS — which is why
+# the server refuses a non-loopback -public-url that is not https.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: trace
+      POSTGRES_PASSWORD: trace
+      POSTGRES_DB: trace_portal
+    ports:
+      # 5433 on the host, not 5432. A machine that does development on Postgres
+      # usually already has one installed and listening on the default port, and
+      # the failure when they collide is confusing rather than loud: the
+      # container starts, reports healthy, and every connection lands on the
+      # *other* database and fails authentication.
+      #
+      # Only the host mapping moves. Inside the compose network the server still
+      # reaches it as postgres:5432, which is also what a deployment does.
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # The server applies its schema on start and fails if it cannot, so it
+      # must not start before Postgres is accepting connections. Without this it
+      # races the database on every `compose up` and fails roughly half the time
+      # — the kind of flake that gets blamed on the code.
+      test: ["CMD-SHELL", "pg_isready -U trace -d trace_portal"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: trace
+      MINIO_ROOT_PASSWORD: tracetrace
+    ports:
+      - "9000:9000"
+      - "9001:9001" # web console, for looking at the Parquet partitions
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  server:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      TRACE_PORTAL_POSTGRES: postgres://trace:trace@postgres:5432/trace_portal?sslmode=disable
+      # Sign-in is off until an issuer is configured. With it off the ingest
+      # endpoint does not exist either, because an unauthenticated write path
+      # into somebody's archive is not a thing worth having by default.
+      #
+      # To turn it on, set these and restart:
+      #   TRACE_PORTAL_OIDC_ISSUER, TRACE_PORTAL_OIDC_CLIENT_ID,
+      #   TRACE_PORTAL_OIDC_SECRET
+      TRACE_PORTAL_PUBLIC_URL: http://localhost:8317
+      # Compacted history goes to the bucket; Postgres holds only the days
+      # still being written to. Swapping MinIO for R2 later is these four
+      # values changing, because the protocol is the same.
+      TRACE_PORTAL_S3_ENDPOINT: minio:9000
+      TRACE_PORTAL_S3_BUCKET: trace-portal
+      TRACE_PORTAL_S3_KEY: trace
+      TRACE_PORTAL_S3_SECRET: tracetrace
+      TRACE_PORTAL_S3_REGION: us-east-1
+    ports:
+      - "8317:8317"
+    volumes:
+      - server-data:/data
+
+volumes:
+  postgres-data:
+  minio-data:
+  server-data:

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,12 +20,12 @@ func TestAppendAndRead(t *testing.T) {
 	now := time.Now().UTC()
 	for i, id := range []string{"a", "b", "c"} {
 		ev := trace.Event{Type: trace.EventRequest, Timestamp: now, TurnID: id, MessageCount: i}
-		if err := st.Append(ev); err != nil {
+		if err := st.Append(context.Background(), ev); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
 
-	got, err := st.Events(now)
+	got, err := st.Events(context.Background(), now)
 	if err != nil {
 		t.Fatalf("events: %v", err)
 	}
@@ -49,7 +50,7 @@ func TestAppendRotatesByDay(t *testing.T) {
 	day2 := day1.Add(2 * time.Minute)
 
 	for _, ts := range []time.Time{day1, day2} {
-		if err := st.Append(trace.Event{Type: trace.EventRequest, Timestamp: ts}); err != nil {
+		if err := st.Append(context.Background(), trace.Event{Type: trace.EventRequest, Timestamp: ts}); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
@@ -59,7 +60,7 @@ func TestAppendRotatesByDay(t *testing.T) {
 			t.Errorf("expected %s: %v", name, err)
 		}
 	}
-	if got, _ := st.Events(day1); len(got) != 1 {
+	if got, _ := st.Events(context.Background(), day1); len(got) != 1 {
 		t.Errorf("day1 has %d events, want 1", len(got))
 	}
 }
@@ -71,7 +72,7 @@ func TestEventsMissingDayIsEmpty(t *testing.T) {
 	}
 	defer st.Close()
 
-	got, err := st.Events(time.Now())
+	got, err := st.Events(context.Background(), time.Now())
 	if err != nil {
 		t.Errorf("unexpected error for a day with no traces: %v", err)
 	}
@@ -88,20 +89,20 @@ func TestBlobRoundTripIsContentAddressed(t *testing.T) {
 	defer st.Close()
 
 	payload := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
-	ref, err := st.PutBlob(payload)
+	ref, err := st.PutBlob(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
 
 	// Identical payloads dedupe to one blob.
-	again, err := st.PutBlob(payload)
+	again, err := st.PutBlob(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("put again: %v", err)
 	}
 	if again != ref {
 		t.Errorf("same payload got refs %s and %s", ref, again)
 	}
-	other, err := st.PutBlob([]byte(`{"messages":[]}`))
+	other, err := st.PutBlob(context.Background(), []byte(`{"messages":[]}`))
 	if err != nil {
 		t.Fatalf("put other: %v", err)
 	}
@@ -109,7 +110,7 @@ func TestBlobRoundTripIsContentAddressed(t *testing.T) {
 		t.Error("distinct payloads collided")
 	}
 
-	got, err := st.GetBlob(ref)
+	got, err := st.GetBlob(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestGetBlobRejectsBadRef(t *testing.T) {
 	}
 	defer st.Close()
 
-	if _, err := st.GetBlob("../../etc/passwd"); err == nil {
+	if _, err := st.GetBlob(context.Background(), "../../etc/passwd"); err == nil {
 		t.Error("expected an error for a malformed blob ref")
 	}
 }

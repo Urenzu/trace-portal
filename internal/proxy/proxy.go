@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -16,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Urenzu/trace-portal/internal/store"
 	"github.com/Urenzu/trace-portal/internal/trace"
 )
 
@@ -32,10 +32,22 @@ const maxCapture = 32 << 20
 // conversation-prefix heuristic.
 const SessionHeader = "X-Trace-Session"
 
+// Recorder is what the proxy needs from storage: somewhere to append an event
+// and somewhere to put a payload.
+//
+// Narrower than the full store on purpose. The proxy sits in a request path and
+// writes what it observes; it has no reason to be able to read the archive back,
+// and an interface that cannot express a read is a component that cannot be
+// talked into performing one.
+type Recorder interface {
+	Append(ctx context.Context, ev trace.Event) error
+	PutBlob(ctx context.Context, payload []byte) (string, error)
+}
+
 // Config configures a Proxy.
 type Config struct {
 	Upstream string       // defaults to DefaultUpstream
-	Store    *store.Store // required
+	Store    Recorder     // required
 	Logger   *slog.Logger // defaults to slog.Default()
 }
 
@@ -43,7 +55,7 @@ type Config struct {
 // a trace event for each exchange.
 type Proxy struct {
 	rp     *httputil.ReverseProxy
-	store  *store.Store
+	store  Recorder
 	log    *slog.Logger
 	target *url.URL
 }
@@ -120,7 +132,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ex.event.SessionID = p.resolveSession(r, decoded)
 		ex.event.RequestBlob = p.putBlob(decoded)
 
-		if err := p.store.Append(ex.event); err != nil {
+		if err := p.append(ex.event); err != nil {
 			p.log.Warn("append request event", "err", err)
 		}
 	}
@@ -174,7 +186,7 @@ func (p *Proxy) modifyResponse(resp *http.Response) error {
 			if !truncated {
 				ev.ResponseBlob = p.putBlob(decoded)
 			}
-			if err := p.store.Append(ev); err != nil {
+			if err := p.append(ev); err != nil {
 				p.log.Warn("append response event", "err", err)
 			}
 		},
@@ -191,7 +203,7 @@ func (p *Proxy) handleError(w http.ResponseWriter, r *http.Request, err error) {
 		ev.Timestamp = time.Now().UTC()
 		ev.DurationMS = time.Since(ex.started).Milliseconds()
 		ev.Error = err.Error()
-		if appendErr := p.store.Append(ev); appendErr != nil {
+		if appendErr := p.append(ev); appendErr != nil {
 			p.log.Warn("append error event", "err", appendErr)
 		}
 	}
@@ -199,11 +211,27 @@ func (p *Proxy) handleError(w http.ResponseWriter, r *http.Request, err error) {
 	w.WriteHeader(http.StatusBadGateway)
 }
 
+// append records an event, and deliberately does not use the request's context.
+//
+// A trace has to outlive the request it describes. Response and error events
+// are written after the exchange has finished — sometimes because it failed, or
+// because the client hung up — and a client that goes away is exactly the case
+// worth having a record of. Threading r.Context() here would cancel the write
+// at the moment the data became most interesting.
+func (p *Proxy) append(ev trace.Event) error {
+	return p.store.Append(storeContext(), ev)
+}
+
+// storeContext is the context used for writes that must not be cancelled by a
+// departing client. It is separate from context.Background() only so that every
+// such call site is greppable.
+func storeContext() context.Context { return context.Background() }
+
 func (p *Proxy) putBlob(payload []byte) string {
 	if len(payload) == 0 {
 		return ""
 	}
-	ref, err := p.store.PutBlob(payload)
+	ref, err := p.store.PutBlob(storeContext(), payload)
 	if err != nil {
 		p.log.Warn("store blob", "err", err)
 		return ""

@@ -1,17 +1,20 @@
 package compact
 
 import (
+	"bytes"
+	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/Urenzu/trace-portal/internal/eventstore"
+	"github.com/Urenzu/trace-portal/internal/objectstore"
 	"github.com/Urenzu/trace-portal/internal/pricing"
 	"github.com/Urenzu/trace-portal/internal/query"
-	"github.com/Urenzu/trace-portal/internal/store"
 	"github.com/Urenzu/trace-portal/internal/trace"
 )
 
@@ -27,33 +30,74 @@ const (
 
 // Compactor converts completed days of JSONL into Parquet partitions.
 type Compactor struct {
-	store *store.Store
-	root  string // <data>/compact
+	store   eventstore.Store
+	objects objectstore.Store
+
+	// root is the local directory when there is one, for diagnostics and for
+	// telling a person where their archive is. Empty when partitions live in a
+	// bucket.
+	root string
+
+	// index caches the consolidated rollup. See loadIndex for why holding it is
+	// safe and why invalidating it is trivial.
+	indexMu sync.RWMutex
+	index   *index
 }
 
 // New returns a Compactor writing partitions under dataDir/compact.
-func New(st *store.Store, dataDir string) (*Compactor, error) {
+//
+// The hot window is an interface because it varies by deployment — files
+// locally, Postgres on a server — while everything this package writes does
+// not. Partitions and rollups are the same Parquet either way, which is what
+// keeps a local archive and a served one readable by the same code, and by
+// DuckDB.
+func New(st eventstore.Store, dataDir string) (*Compactor, error) {
 	root := filepath.Join(dataDir, "compact")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return nil, fmt.Errorf("create compact dir: %w", err)
+	objects, err := objectstore.NewLocal(root)
+	if err != nil {
+		return nil, err
 	}
-	return &Compactor{store: st, root: root}, nil
+	return &Compactor{store: st, objects: objects, root: root}, nil
+}
+
+// NewWithObjects returns a Compactor writing partitions into an object store.
+//
+// The keys are identical to the paths the local layout uses -- "2026-08-28/
+// turns.parquet", "rollup/day.parquet" -- so an archive can be copied between a
+// directory and a bucket and stay readable by both. That was not free: it is
+// why keys are assembled with objectstore.Key rather than filepath.Join, which
+// on Windows would produce backslashes and quietly fork the layout by platform.
+func NewWithObjects(st eventstore.Store, objects objectstore.Store) *Compactor {
+	return &Compactor{store: st, objects: objects}
+}
+
+// partitionKey is the key prefix holding one day of Parquet files.
+func partitionKey(day time.Time) string { return day.UTC().Format("2006-01-02") }
+
+// partitionFile names one file inside a day partition.
+func partitionFile(day time.Time, name string) string {
+	return objectstore.Key(partitionKey(day), name)
 }
 
 // Root is the directory holding every partition.
 func (c *Compactor) Root() string { return c.root }
 
-// PartitionDir is the directory holding one day of Parquet files.
+// PartitionDir is the local directory holding one day of Parquet files. It is
+// empty when partitions live in a bucket, and exists for diagnostics and for
+// the DuckDB invitation in the README rather than as a read path.
 func (c *Compactor) PartitionDir(day time.Time) string {
-	return filepath.Join(c.root, day.UTC().Format("2006-01-02"))
+	if c.root == "" {
+		return ""
+	}
+	return filepath.Join(c.root, partitionKey(day))
 }
 
 // IsCompacted reports whether a day has a complete partition. Partitions are
 // published by renaming a fully written temp directory into place, so the
 // presence of the directory implies every file in it is complete.
 func (c *Compactor) IsCompacted(day time.Time) bool {
-	_, err := os.Stat(filepath.Join(c.PartitionDir(day), turnsFile))
-	return err == nil
+	ok, err := c.objects.Exists(storeContext(), partitionFile(day, turnsFile))
+	return err == nil && ok
 }
 
 // CompactDay rewrites one day of events into a Parquet partition, reporting
@@ -71,7 +115,7 @@ func (c *Compactor) CompactDay(day time.Time, force bool) (bool, error) {
 		return false, nil
 	}
 
-	events, err := c.store.Events(day)
+	events, err := c.store.Events(storeContext(), day)
 	if err != nil {
 		return false, fmt.Errorf("read events for %s: %w", day.Format("2006-01-02"), err)
 	}
@@ -86,44 +130,33 @@ func (c *Compactor) CompactDay(day time.Time, force bool) (bool, error) {
 	}
 	dayRow, modelRows, toolRows, projectRows, sessionRows := rollup(day, turns)
 
-	// Write into a temp directory and rename it into place, so a crash during
-	// compaction cannot leave a half-written partition that reads as complete.
-	tmp, err := os.MkdirTemp(c.root, ".tmp-"+day.Format("2006-01-02")+"-*")
-	if err != nil {
-		return false, fmt.Errorf("create temp partition: %w", err)
+	// The rollups are written first and turns.parquet last, because an object
+	// store has no rename.
+	//
+	// The local layout used to publish a partition by renaming a fully written
+	// temporary directory into place, which made the directory existing proof
+	// that everything inside it was complete. That trick does not exist in a
+	// bucket, so completeness is published by ordering instead: IsCompacted
+	// tests for turns.parquet, and turns.parquet is the last thing written, so
+	// its presence still means the whole partition landed. A crash halfway
+	// leaves rollups with no turns file, which reads as "not compacted" and is
+	// simply redone.
+	ctx := storeContext()
+	writes := []struct {
+		name string
+		put  func() error
+	}{
+		{dayFile, func() error { return putParquet(ctx, c.objects, partitionFile(day, dayFile), []DayRow{dayRow}) }},
+		{modelsFile, func() error { return putParquet(ctx, c.objects, partitionFile(day, modelsFile), modelRows) }},
+		{toolsFile, func() error { return putParquet(ctx, c.objects, partitionFile(day, toolsFile), toolRows) }},
+		{projectsFile, func() error { return putParquet(ctx, c.objects, partitionFile(day, projectsFile), projectRows) }},
+		{sessionsFile, func() error { return putParquet(ctx, c.objects, partitionFile(day, sessionsFile), sessionRows) }},
+		{turnsFile, func() error { return putParquet(ctx, c.objects, partitionFile(day, turnsFile), rows) }},
 	}
-	defer os.RemoveAll(tmp)
-
-	if err := writeParquet(filepath.Join(tmp, turnsFile), rows); err != nil {
-		return false, err
-	}
-	if err := writeParquet(filepath.Join(tmp, dayFile), []DayRow{dayRow}); err != nil {
-		return false, err
-	}
-	if err := writeParquet(filepath.Join(tmp, modelsFile), modelRows); err != nil {
-		return false, err
-	}
-	if err := writeParquet(filepath.Join(tmp, toolsFile), toolRows); err != nil {
-		return false, err
-	}
-	if err := writeParquet(filepath.Join(tmp, projectsFile), projectRows); err != nil {
-		return false, err
-	}
-	if err := writeParquet(filepath.Join(tmp, sessionsFile), sessionRows); err != nil {
-		return false, err
-	}
-
-	final := c.PartitionDir(day)
-	if force {
-		os.RemoveAll(final)
-	}
-	if err := os.Rename(tmp, final); err != nil {
-		// Another compactor may have published this day first, which is
-		// harmless: the partition exists either way.
-		if c.IsCompacted(day) {
-			return false, nil
+	for _, w := range writes {
+		if err := w.put(); err != nil {
+			return false, fmt.Errorf("write %s for %s: %w", w.name, partitionKey(day), err)
 		}
-		return false, fmt.Errorf("publish partition: %w", err)
 	}
 	return true, nil
 }
@@ -131,7 +164,7 @@ func (c *Compactor) CompactDay(day time.Time, force bool) (bool, error) {
 // CompactAll compacts every completed day that has no partition yet, returning
 // how many it wrote.
 func (c *Compactor) CompactAll() (int, error) {
-	days, err := c.store.Days()
+	days, err := c.store.Days(storeContext())
 	if err != nil {
 		return 0, err
 	}
@@ -160,21 +193,38 @@ func (c *Compactor) CompactAll() (int, error) {
 
 func (c *Compactor) hasIndex() bool {
 	for _, name := range []string{dayFile, sessionsFile} {
-		if _, err := os.Stat(c.indexPath(name)); err != nil {
+		ok, err := c.objects.Exists(storeContext(), c.indexKey(name))
+		if err != nil || !ok {
 			return false
 		}
 	}
 	return true
 }
 
-func writeParquet[T any](path string, rows []T) error {
+// putParquet encodes rows and stores them under key.
+//
+// Encoded into memory rather than streamed. A day of turns is tens of kilobytes
+// and the rollups are smaller still, so the buffer is irrelevant -- and writing
+// the whole object in one call is what makes the PUT atomic, which is what
+// replaced the rename.
+func putParquet[T any](ctx context.Context, objects objectstore.Store, key string, rows []T) error {
+	var buf bytes.Buffer
 	// Zstd is a large win on columnar data and costs nothing on the hot path,
 	// since compaction runs in the background.
-	if err := parquet.WriteFile(path, rows, parquet.Compression(&parquet.Zstd)); err != nil {
-		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
+	if err := parquet.Write(&buf, rows, parquet.Compression(&parquet.Zstd)); err != nil {
+		return fmt.Errorf("encode %s: %w", key, err)
 	}
-	return nil
+	return objects.Put(ctx, key, buf.Bytes())
 }
+
+// storeContext is the context compaction reads the hot window with.
+//
+// It is deliberately not a request context. Compaction is a background job that
+// nobody is waiting on, and the read paths that *are* request-driven still call
+// through here — threading the caller's context all the way down is a separate
+// change, listed in todo.md, and doing it halfway would cancel a background
+// compaction because a browser tab closed.
+func storeContext() context.Context { return context.Background() }
 
 func truncateDay(t time.Time) time.Time {
 	t = t.UTC()
@@ -189,6 +239,9 @@ func toRow(t query.Turn) TurnRow {
 		TurnID:       t.TurnID,
 		Model:        t.Model,
 		Stream:       t.Stream,
+		TenantID:     t.TenantID,
+		UserID:       t.UserID,
+		MachineID:    t.MachineID,
 		Project:      t.Project,
 		ProjectID:    t.ProjectID,
 		GitBranch:    t.GitBranch,
@@ -228,6 +281,7 @@ func FromRow(r TurnRow) query.Turn {
 		StartedAt:    time.UnixMilli(r.TS).UTC(),
 		Model:        r.Model,
 		Stream:       r.Stream,
+		Identity:     trace.Identity{TenantID: r.TenantID, UserID: r.UserID, MachineID: r.MachineID},
 		Project:      r.Project,
 		ProjectID:    r.ProjectID,
 		GitBranch:    r.GitBranch,

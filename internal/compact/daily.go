@@ -42,6 +42,11 @@ func (c *Compactor) DailyRange(from, to time.Time) ([]DayPoint, error) {
 		return nil, err
 	}
 
+	hot, err := c.hotDays()
+	if err != nil {
+		return nil, err
+	}
+
 	var out []DayPoint
 	err = c.eachDay(from, to, func(day time.Time) error {
 		key := day.Format(dayLayout)
@@ -51,6 +56,9 @@ func (c *Compactor) DailyRange(from, to time.Time) ([]DayPoint, error) {
 				out = appendPoint(out, fromDayRow(row))
 				return nil
 			}
+		}
+		if knownEmpty(idx, hot, day) {
+			return nil
 		}
 		if row, ok, err := c.ReadDay(day); err != nil {
 			return err
@@ -86,6 +94,11 @@ func (c *Compactor) ProjectDaily(from, to time.Time, projectID string) ([]DayPoi
 		return nil, err
 	}
 
+	hot, err := c.hotDays()
+	if err != nil {
+		return nil, err
+	}
+
 	var out []DayPoint
 	err = c.eachDay(from, to, func(day time.Time) error {
 		key := day.Format(dayLayout)
@@ -95,6 +108,9 @@ func (c *Compactor) ProjectDaily(from, to time.Time, projectID string) ([]DayPoi
 				out = appendPoint(out, fromProjectRows(key, rows, projectID))
 				return nil
 			}
+		}
+		if knownEmpty(idx, hot, day) {
+			return nil
 		}
 		rows, err := c.ReadProjects(day)
 		if err != nil {
@@ -116,6 +132,53 @@ func (c *Compactor) ProjectDaily(from, to time.Time, projectID string) ([]DayPoi
 		return nil, err
 	}
 	return out, nil
+}
+
+// hotDays is the set of days the write-ahead window still holds, as YYYY-MM-DD.
+//
+// It exists to make an empty day free.
+//
+// A window is walked one day at a time, and a day the rollup does not cover
+// used to fall through to a partition read and then a hot-window read. On local
+// disk those were two failed file opens -- microseconds, and invisible. Against
+// object storage they are network round trips, and a 365-day window over an
+// archive holding 15 active days spent 350 of them proving that nothing was
+// there. Measured at 1.2 seconds against MinIO on the same machine; against a
+// bucket across the internet it would be far worse.
+//
+// One listing answers all of it. The rollup says which days have partitions and
+// this says which days are still in the window; a day in neither is empty, and
+// no request has to be made to establish that.
+func (c *Compactor) hotDays() (map[string]bool, error) {
+	days, err := c.store.Days(storeContext())
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(days))
+	for _, d := range days {
+		set[d.UTC().Format(dayLayout)] = true
+	}
+	return set, nil
+}
+
+// knownEmpty reports whether a day can be skipped without touching storage.
+//
+// A day is empty when the rollup does not cover it and the write-ahead window
+// does not hold it. Both facts are already in hand -- the rollup is cached and
+// the window day set is one query -- so establishing it costs nothing, whereas
+// discovering it by reading was costing five object round trips per day.
+//
+// Conservative when there is no rollup at all: a fresh archive has partitions
+// before it has an index, and skipping then would hide real data.
+func knownEmpty(idx *index, hot map[string]bool, day time.Time) bool {
+	if idx == nil {
+		return false
+	}
+	key := day.UTC().Format(dayLayout)
+	if _, covered := idx.days[key]; covered {
+		return false
+	}
+	return !hot[key]
 }
 
 // eachDay walks whole UTC days from oldest to newest, inclusive.

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -50,7 +51,7 @@ func eventsOfType(t *testing.T, st *store.Store, typ trace.EventType) []trace.Ev
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		all, err := st.Events(time.Now().UTC())
+		all, err := st.Events(context.Background(), time.Now().UTC())
 		if err != nil {
 			t.Fatalf("read events: %v", err)
 		}
@@ -123,7 +124,7 @@ func TestProxyCapturesJSONExchange(t *testing.T) {
 	if len(reqs) != 1 || reqs[0].TurnID != ev.TurnID {
 		t.Fatalf("request/response events did not pair: %+v vs %+v", reqs, ev)
 	}
-	blob, err := st.GetBlob(ev.ResponseBlob)
+	blob, err := st.GetBlob(context.Background(), ev.ResponseBlob)
 	if err != nil {
 		t.Fatalf("get response blob: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestProxyIgnoresNonMessagesPaths(t *testing.T) {
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
-	all, err := st.Events(time.Now().UTC())
+	all, err := st.Events(context.Background(), time.Now().UTC())
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}
@@ -379,7 +380,7 @@ func TestCapturesUsageFromGzippedSSE(t *testing.T) {
 	}
 
 	// The stored payload should be readable, not a compressed blob.
-	blob, err := st.GetBlob(ev.ResponseBlob)
+	blob, err := st.GetBlob(context.Background(), ev.ResponseBlob)
 	if err != nil {
 		t.Fatalf("get blob: %v", err)
 	}

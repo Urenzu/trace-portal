@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
@@ -53,13 +54,13 @@ func TestScaleJSONLvsParquet(t *testing.T) {
 			session := fmt.Sprintf("sess-%d-%d", d, i/12) // ~12 turns per session
 			model := models[rng.Intn(len(models))]
 
-			st.Append(trace.Event{
+			st.Append(context.Background(), trace.Event{
 				Type: trace.EventRequest, Timestamp: ts, SessionID: session, TurnID: turnID,
 				Model: model, Stream: true, MessageCount: 4 + i%20, SystemBlocks: 2,
 				ToolsOffered: tools, MaxTokens: 4096,
 				RequestBlob: "995d8f73806444b693d0e939cb5b2be06f3c8b54a085a06020d5e6c1c5dac6bb",
 			})
-			st.Append(trace.Event{
+			st.Append(context.Background(), trace.Event{
 				Type: trace.EventResponse, Timestamp: ts.Add(2 * time.Second),
 				SessionID: session, TurnID: turnID, Model: model,
 				StatusCode: 200, StopReason: "tool_use", DurationMS: 2000, TTFBMS: 300,
@@ -104,7 +105,7 @@ func TestScaleJSONLvsParquet(t *testing.T) {
 
 		runtime.GC()
 		t1 := time.Now()
-		events, err := st2.EventsRange(from, to)
+		events, err := st2.EventsRange(context.Background(), from, to)
 		if err != nil {
 			t.Fatal(err)
 		}

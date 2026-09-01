@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,7 +28,7 @@ func newTestServer(t *testing.T, events ...trace.Event) (http.Handler, *store.St
 	t.Cleanup(func() { st.Close() })
 
 	for _, ev := range events {
-		if err := st.Append(ev); err != nil {
+		if err := st.Append(context.Background(), ev); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
@@ -185,7 +186,7 @@ func TestWindowFiltersOldEvents(t *testing.T) {
 func TestBlobEndpoint(t *testing.T) {
 	h, st := newTestServer(t)
 	payload := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
-	ref, err := st.PutBlob(payload)
+	ref, err := st.PutBlob(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("put blob: %v", err)
 	}

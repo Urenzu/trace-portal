@@ -5,6 +5,7 @@ package store
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Urenzu/trace-portal/internal/identity"
 	"github.com/Urenzu/trace-portal/internal/trace"
 )
 
@@ -26,24 +28,50 @@ import (
 type Store struct {
 	root string
 
+	// identity is stamped onto every event that does not already carry one.
+	// See Append for why it lives here rather than at each capture site.
+	identity trace.Identity
+
 	mu   sync.Mutex
 	day  string
 	file *os.File
 	enc  *json.Encoder
 }
 
-// Open prepares the directory layout under root, creating it if needed.
+// Open prepares the directory layout under root, creating it if needed, and
+// resolves the enrollment that will attribute everything written through it.
+//
+// Loading the enrollment here rather than at each caller is deliberate. A turn
+// with no owner cannot be repaired later, so the property worth having is that
+// there is no way to obtain a Store that does not attribute what it writes —
+// not a rule each new capture path has to remember.
 func Open(root string) (*Store, error) {
 	for _, dir := range []string{"events", "blobs"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			return nil, fmt.Errorf("create %s dir: %w", dir, err)
 		}
 	}
-	return &Store{root: root}, nil
+	enrollment, err := identity.Load(root)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{root: root, identity: enrollment.Identity()}, nil
 }
 
+// Identity reports who this store attributes its writes to.
+func (s *Store) Identity() trace.Identity { return s.identity }
+
 // Append writes one event to today's JSONL file, rotating at UTC midnight.
-func (s *Store) Append(ev trace.Event) error {
+//
+// The event's own identity wins where it has one. That is what lets the same
+// code serve both roles: capturing locally, nothing knows who produced a turn
+// and this store's enrollment supplies the answer; receiving a batch from a
+// collector, the identity was stamped on the machine that produced it and must
+// survive untouched — a server that overwrote it with its own would attribute
+// every customer's turns to itself.
+func (s *Store) Append(_ context.Context, ev trace.Event) error {
+	ev.Identity.Merge(s.identity)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -75,7 +103,7 @@ func (s *Store) rotateLocked(day string) error {
 
 // PutBlob stores a payload and returns its reference (the content hash). Blobs
 // are content-addressed, so identical payloads are written once.
-func (s *Store) PutBlob(payload []byte) (string, error) {
+func (s *Store) PutBlob(_ context.Context, payload []byte) (string, error) {
 	sum := sha256.Sum256(payload)
 	ref := hex.EncodeToString(sum[:])
 	path := s.blobPath(ref)
@@ -134,7 +162,7 @@ func validRef(ref string) bool {
 }
 
 // GetBlob returns a previously stored payload.
-func (s *Store) GetBlob(ref string) ([]byte, error) {
+func (s *Store) GetBlob(_ context.Context, ref string) ([]byte, error) {
 	if !validRef(ref) {
 		return nil, fmt.Errorf("invalid blob ref %q", ref)
 	}
@@ -158,7 +186,7 @@ func (s *Store) blobPath(ref string) string {
 
 // Events reads back every event for a UTC day, oldest first. Compaction and the
 // query API will replace this, but it keeps the pipeline testable end to end.
-func (s *Store) Events(day time.Time) ([]trace.Event, error) {
+func (s *Store) Events(_ context.Context, day time.Time) ([]trace.Event, error) {
 	path := filepath.Join(s.root, "events", day.UTC().Format("2006-01-02")+".jsonl")
 	f, err := os.Open(path)
 	if err != nil {
@@ -183,7 +211,7 @@ func (s *Store) Events(day time.Time) ([]trace.Event, error) {
 
 // EventsRange reads every event between from and to inclusive, walking one
 // daily file per day. Days with no traces are skipped rather than erroring.
-func (s *Store) EventsRange(from, to time.Time) ([]trace.Event, error) {
+func (s *Store) EventsRange(ctx context.Context, from, to time.Time) ([]trace.Event, error) {
 	from, to = from.UTC(), to.UTC()
 	if to.Before(from) {
 		from, to = to, from
@@ -193,7 +221,7 @@ func (s *Store) EventsRange(from, to time.Time) ([]trace.Event, error) {
 	day := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.UTC)
 	last := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, time.UTC)
 	for !day.After(last) {
-		dayEvents, err := s.Events(day)
+		dayEvents, err := s.Events(ctx, day)
 		if err != nil {
 			return events, err
 		}
@@ -204,7 +232,7 @@ func (s *Store) EventsRange(from, to time.Time) ([]trace.Event, error) {
 }
 
 // Days lists the UTC days that have an event log, oldest first.
-func (s *Store) Days() ([]time.Time, error) {
+func (s *Store) Days(_ context.Context) ([]time.Time, error) {
 	entries, err := os.ReadDir(filepath.Join(s.root, "events"))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -243,3 +271,14 @@ func (s *Store) Close() error {
 
 // Root is the directory holding every event log and blob.
 func (s *Store) Root() string { return s.root }
+
+// Put and Get satisfy eventstore.Blobs. The longer names are kept because
+// PutBlob reads better at a call site that is doing something else as well.
+func (s *Store) Put(ctx context.Context, payload []byte) (string, error) {
+	return s.PutBlob(ctx, payload)
+}
+
+// Get returns a stored payload.
+func (s *Store) Get(ctx context.Context, ref string) ([]byte, error) {
+	return s.GetBlob(ctx, ref)
+}

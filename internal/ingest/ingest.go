@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Urenzu/trace-portal/internal/eventstore"
 	"github.com/Urenzu/trace-portal/internal/source"
-	"github.com/Urenzu/trace-portal/internal/store"
 	"github.com/Urenzu/trace-portal/internal/trace"
 )
 
@@ -29,7 +29,7 @@ const checkpointFile = "ingest.json"
 
 // Ingester follows a set of sources into a store.
 type Ingester struct {
-	store   *store.Store
+	store   eventstore.Store
 	sources []source.Source
 	log     *slog.Logger
 	path    string
@@ -46,7 +46,7 @@ type checkpoint struct {
 }
 
 // New builds an Ingester writing into st, checkpointing under dataDir.
-func New(st *store.Store, dataDir string, log *slog.Logger, sources ...source.Source) *Ingester {
+func New(st eventstore.Store, dataDir string, log *slog.Logger, sources ...source.Source) *Ingester {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -122,7 +122,7 @@ func (i *Ingester) Run(ctx context.Context, every time.Duration) error {
 	}
 
 	start := time.Now()
-	res, err := i.Pass()
+	res, err := i.Pass(ctx)
 	if err != nil {
 		i.log.Warn("initial ingest pass failed", "err", err)
 	}
@@ -141,7 +141,7 @@ func (i *Ingester) Run(ctx context.Context, every time.Duration) error {
 		case <-ctx.Done():
 			return i.saveCheckpoint()
 		case <-ticker.C:
-			res, err := i.Pass()
+			res, err := i.Pass(ctx)
 			if err != nil {
 				i.log.Warn("ingest pass failed", "err", err)
 				continue
@@ -154,7 +154,7 @@ func (i *Ingester) Run(ctx context.Context, every time.Duration) error {
 }
 
 // Pass reads every source once, from where it last stopped.
-func (i *Ingester) Pass() (Result, error) {
+func (i *Ingester) Pass(ctx context.Context) (Result, error) {
 	var res Result
 	for _, src := range i.sources {
 		files, err := src.Files()
@@ -184,7 +184,7 @@ func (i *Ingester) Pass() (Result, error) {
 				if ev.Timestamp.IsZero() {
 					ev.Timestamp = info.ModTime().UTC()
 				}
-				if err := i.store.Append(ev); err != nil {
+				if err := i.store.Append(ctx, ev); err != nil {
 					return err
 				}
 				events++

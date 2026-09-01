@@ -1,12 +1,15 @@
 package compact
 
 import (
-	"os"
-	"path/filepath"
+	"bytes"
+	"context"
+	"errors"
+	"io/fs"
 	"time"
 
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/Urenzu/trace-portal/internal/objectstore"
 	"github.com/Urenzu/trace-portal/internal/query"
 )
 
@@ -14,13 +17,12 @@ import (
 // partition. Reading Parquet decodes only the columns the struct declares, and
 // skips row groups outside the file entirely.
 func (c *Compactor) ReadTurns(day time.Time) ([]query.Turn, bool, error) {
-	path := filepath.Join(c.PartitionDir(day), turnsFile)
-	rows, err := parquet.ReadFile[TurnRow](path)
+	rows, err := getParquet[TurnRow](storeContext(), c.objects, partitionFile(day, turnsFile))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, false, nil
-		}
 		return nil, false, err
+	}
+	if rows == nil {
+		return nil, false, nil
 	}
 
 	turns := make([]query.Turn, 0, len(rows))
@@ -34,7 +36,7 @@ func (c *Compactor) ReadTurns(day time.Time) ([]query.Turn, bool, error) {
 // dashboard reads: one row per day, so its cost scales with the number of days
 // in the window rather than the number of turns.
 func (c *Compactor) ReadDay(day time.Time) (DayRow, bool, error) {
-	rows, err := readOrMissing[DayRow](filepath.Join(c.PartitionDir(day), dayFile))
+	rows, err := getParquet[DayRow](storeContext(), c.objects, partitionFile(day, dayFile))
 	if err != nil || len(rows) == 0 {
 		return DayRow{}, false, err
 	}
@@ -43,28 +45,44 @@ func (c *Compactor) ReadDay(day time.Time) (DayRow, bool, error) {
 
 // ReadModels returns a day's per-model breakdown.
 func (c *Compactor) ReadModels(day time.Time) ([]ModelRow, error) {
-	return readOrMissing[ModelRow](filepath.Join(c.PartitionDir(day), modelsFile))
+	return getParquet[ModelRow](storeContext(), c.objects, partitionFile(day, modelsFile))
 }
 
 // ReadTools returns a day's tool-call histogram.
 func (c *Compactor) ReadTools(day time.Time) ([]ToolRow, error) {
-	return readOrMissing[ToolRow](filepath.Join(c.PartitionDir(day), toolsFile))
+	return getParquet[ToolRow](storeContext(), c.objects, partitionFile(day, toolsFile))
 }
 
 // ReadProjects returns a day's per-project breakdown.
 func (c *Compactor) ReadProjects(day time.Time) ([]ProjectRow, error) {
-	return readOrMissing[ProjectRow](filepath.Join(c.PartitionDir(day), projectsFile))
+	return getParquet[ProjectRow](storeContext(), c.objects, partitionFile(day, projectsFile))
 }
 
-// readOrMissing treats an absent partition as an empty result rather than an
-// error, so callers can fall back to the JSONL path.
-func readOrMissing[T any](path string) ([]T, error) {
-	rows, err := parquet.ReadFile[T](path)
+// getParquet reads rows from an object, treating an absent one as an empty
+// result rather than an error so callers can fall back to the hot window.
+//
+// A nil slice and an empty slice mean different things here and callers depend
+// on the difference: nil is "no partition, go and read the raw events", empty is
+// "a partition exists and that day genuinely had none of these rows". Collapsing
+// them would make a day with no tool calls re-read its whole event log forever.
+func getParquet[T any](ctx context.Context, objects objectstore.Store, key string) ([]T, error) {
+	data, err := objects.Get(ctx, key)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if len(data) == 0 {
+		return []T{}, nil
+	}
+	rows, err := parquet.Read[T](bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		// The object exists, so the answer is "none" rather than "no partition".
+		return []T{}, nil
 	}
 	return rows, nil
 }
@@ -86,7 +104,7 @@ type sessionProbe struct {
 // built by an older build correct without forcing a recompaction, at the cost
 // of reading two columns rather than a prepared rollup.
 func (c *Compactor) ReadSessionDays(day time.Time) ([]SessionDayRow, error) {
-	rows, err := readOrMissing[SessionDayRow](filepath.Join(c.PartitionDir(day), sessionsFile))
+	rows, err := getParquet[SessionDayRow](storeContext(), c.objects, partitionFile(day, sessionsFile))
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +112,7 @@ func (c *Compactor) ReadSessionDays(day time.Time) ([]SessionDayRow, error) {
 		return rows, nil
 	}
 
-	probes, err := readOrMissing[sessionProbe](filepath.Join(c.PartitionDir(day), turnsFile))
+	probes, err := getParquet[sessionProbe](storeContext(), c.objects, partitionFile(day, turnsFile))
 	if err != nil || probes == nil {
 		return nil, err
 	}

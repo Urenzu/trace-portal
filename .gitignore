@@ -43,6 +43,13 @@ blobs/
 goal.md
 Todo.md
 Product.md
+notes.md
+
+# Agent working files. CLAUDE.md is instructions for whoever's agent is driving
+# this repo, and .claude/skills/ is personal tooling; neither belongs to the
+# project.
+CLAUDE.md
+.claude/
 
 # Editors and OS
 .vscode/

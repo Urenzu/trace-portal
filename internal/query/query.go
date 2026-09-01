@@ -13,8 +13,14 @@ import (
 
 // Turn is one request/response exchange, assembled from the paired events.
 type Turn struct {
-	TurnID     string    `json:"turn_id"`
-	SessionID  string    `json:"session_id"`
+	TurnID    string `json:"turn_id"`
+	SessionID string `json:"session_id"`
+
+	// Identity is who produced this turn, stamped at capture. Inline in the
+	// JSON so a client reads user_id beside project rather than under a nested
+	// object, matching how the field is stored.
+	trace.Identity
+
 	MessageID  string    `json:"message_id,omitempty"`
 	Source     string    `json:"source,omitempty"`
 	Project    string    `json:"project,omitempty"`
@@ -60,7 +66,15 @@ func setIfEmpty(dst *string, v string) {
 
 // Session is the rolled-up view of one conversation.
 type Session struct {
-	ID      string `json:"id"`
+	ID string `json:"id"`
+
+	// Identity comes from the session's turns, which all share one: a
+	// conversation happens on one machine, belonging to one person. A session
+	// whose turns disagreed would mean two people resumed the same session id,
+	// which the collector split makes impossible — ids are minted per
+	// enrollment.
+	trace.Identity
+
 	Model   string `json:"model"`
 	Project string `json:"project,omitempty"`
 	// ProjectID is the stable digest of the working directory. Two projects can
@@ -148,6 +162,7 @@ func applyEvent(t *Turn, ev trace.Event) {
 	}
 	// Merge, never overwrite with emptiness: each source knows a different
 	// subset, and whichever observed a field should keep it.
+	t.Identity.Merge(ev.Identity)
 	setIfEmpty(&t.Source, ev.Source)
 	setIfEmpty(&t.MessageID, ev.MessageID)
 	setIfEmpty(&t.Project, ev.Project)
@@ -278,6 +293,7 @@ func summarize(id string, turns []Turn) Session {
 			s.EndedAt = end
 		}
 
+		s.Identity.Merge(t.Identity)
 		s.Usage.Add(t.Usage)
 		s.CostUSD += t.CostUSD
 		if !t.Priced && t.Model != "" {

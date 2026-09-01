@@ -2,6 +2,7 @@ package compact
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -30,7 +31,7 @@ func newCompactor(t *testing.T, events ...trace.Event) (*Compactor, *store.Store
 	t.Cleanup(func() { st.Close() })
 
 	for _, ev := range events {
-		if err := st.Append(ev); err != nil {
+		if err := st.Append(context.Background(), ev); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
@@ -143,7 +144,7 @@ func TestCompactedMatchesRaw(t *testing.T) {
 	events := dayEvents(day, "s1", "t1", "claude-sonnet-5", usage, "bash")
 	c, st := newCompactor(t, events...)
 
-	raw, err := st.Events(day)
+	raw, err := st.Events(context.Background(), day)
 	if err != nil {
 		t.Fatal(err)
 	}

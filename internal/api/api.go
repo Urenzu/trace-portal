@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,8 +14,8 @@ import (
 	"time"
 
 	"github.com/Urenzu/trace-portal/internal/compact"
+	"github.com/Urenzu/trace-portal/internal/identity"
 	"github.com/Urenzu/trace-portal/internal/source"
-	"github.com/Urenzu/trace-portal/internal/store"
 	"github.com/Urenzu/trace-portal/internal/trace"
 )
 
@@ -49,7 +50,7 @@ type CoverageReporter interface {
 // Parquet partitions where they exist and falls back to raw JSONL otherwise;
 // blob fetches go straight to the store.
 type Server struct {
-	store    *store.Store
+	store    Archive
 	compact  *compact.Compactor
 	coverage CoverageReporter
 	log      *slog.Logger
@@ -57,7 +58,16 @@ type Server struct {
 
 // New builds a Server. coverage may be nil, in which case the health endpoint
 // simply reports none.
-func New(st *store.Store, c *compact.Compactor, coverage CoverageReporter, log *slog.Logger) *Server {
+// Archive is what the read API needs from the hot window: which days exist, the
+// identity it stamps, and the payloads behind a turn. Everything analytical
+// comes from the compactor instead.
+type Archive interface {
+	Days(ctx context.Context) ([]time.Time, error)
+	Identity() trace.Identity
+	GetBlob(ctx context.Context, ref string) ([]byte, error)
+}
+
+func New(st Archive, c *compact.Compactor, coverage CoverageReporter, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -77,12 +87,25 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	days, err := s.store.Days()
+	days, err := s.store.Days(r.Context())
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	resp := map[string]any{"status": "ok", "days_captured": len(days)}
+	// Identity tells a client which of two products it is talking to: an
+	// unenrolled local install, which can offer to sign in, or an enrolled one,
+	// which can say whose data is on screen. Only the ids are exposed; the
+	// collector token never leaves the enrollment file.
+	id := s.store.Identity()
+	resp := map[string]any{
+		"status":        "ok",
+		"days_captured": len(days),
+		"identity": map[string]any{
+			"tenant_id": id.TenantID,
+			"user_id":   id.UserID,
+			"local":     id.TenantID == identity.LocalTenant && id.UserID == identity.LocalUser,
+		},
+	}
 	if len(days) > 0 {
 		resp["first_day"] = days[0].Format("2006-01-02")
 		resp["last_day"] = days[len(days)-1].Format("2006-01-02")
@@ -212,7 +235,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
-	payload, err := s.store.GetBlob(r.PathValue("ref"))
+	payload, err := s.store.GetBlob(r.Context(), r.PathValue("ref"))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			s.fail(w, http.StatusNotFound, fmt.Errorf("blob not found"))

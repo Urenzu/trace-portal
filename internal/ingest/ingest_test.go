@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"math"
@@ -48,7 +49,7 @@ func TestIngestBackfillsThenFollows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := ing.Pass()
+	res, err := ing.Pass(context.Background())
 	if err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
@@ -58,7 +59,7 @@ func TestIngestBackfillsThenFollows(t *testing.T) {
 
 	// A pass with nothing new must ingest nothing, or every poll would
 	// duplicate the whole history.
-	res, err = ing.Pass()
+	res, err = ing.Pass(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestIngestBackfillsThenFollows(t *testing.T) {
 	f.WriteString(assistantLine("msg_3"))
 	f.Close()
 
-	res, err = ing.Pass()
+	res, err = ing.Pass(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func TestIngestBackfillsThenFollows(t *testing.T) {
 		t.Errorf("follow-up pass ingested %d, want 1", res.Events)
 	}
 
-	events, err := st.Events(time.Now().UTC())
+	events, err := st.Events(context.Background(), time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestIngestResumesAfterRestart(t *testing.T) {
 
 	st1, _ := store.Open(dir)
 	ing1 := New(st1, dir, quiet, src)
-	if res, _ := ing1.Pass(); res.Events != 1 {
+	if res, _ := ing1.Pass(context.Background()); res.Events != 1 {
 		t.Fatalf("first run ingested %d, want 1", res.Events)
 	}
 	st1.Close()
@@ -121,7 +122,7 @@ func TestIngestResumesAfterRestart(t *testing.T) {
 	if err := ing2.loadCheckpoint(); err != nil {
 		t.Fatalf("load checkpoint: %v", err)
 	}
-	res, err := ing2.Pass()
+	res, err := ing2.Pass(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,12 +137,12 @@ func TestIngestHandlesTruncatedFile(t *testing.T) {
 	ing, _, path := newIngester(t)
 
 	os.WriteFile(path, []byte(assistantLine("msg_1")+assistantLine("msg_2")), 0o644)
-	if res, _ := ing.Pass(); res.Events != 2 {
+	if res, _ := ing.Pass(context.Background()); res.Events != 2 {
 		t.Fatal("setup pass did not ingest 2")
 	}
 
 	os.WriteFile(path, []byte(assistantLine("msg_9")), 0o644)
-	res, err := ing.Pass()
+	res, err := ing.Pass(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +159,7 @@ func TestIngestMissingSourceDirectoryIsHarmless(t *testing.T) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ing := New(st, dir, quiet, source.NewClaudeCode(filepath.Join(dir, "nope")))
 
-	res, err := ing.Pass()
+	res, err := ing.Pass(context.Background())
 	if err != nil {
 		t.Errorf("missing source dir errored: %v", err)
 	}
@@ -173,7 +174,7 @@ func TestArchiveSurvivesTranscriptDeletion(t *testing.T) {
 	ing, st, path := newIngester(t)
 	os.WriteFile(path, []byte(assistantLine("msg_1")+assistantLine("msg_2")), 0o644)
 
-	if res, _ := ing.Pass(); res.Events != 2 {
+	if res, _ := ing.Pass(context.Background()); res.Events != 2 {
 		t.Fatal("setup did not ingest 2 events")
 	}
 
@@ -182,7 +183,7 @@ func TestArchiveSurvivesTranscriptDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events, err := st.Events(time.Now().UTC())
+	events, err := st.Events(context.Background(), time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,10 +201,10 @@ func TestArchiveSurvivesTranscriptDeletion(t *testing.T) {
 	}
 
 	// A later pass must not erase anything just because the file is gone.
-	if res, err := ing.Pass(); err != nil || res.Events != 0 {
+	if res, err := ing.Pass(context.Background()); err != nil || res.Events != 0 {
 		t.Errorf("pass over a deleted file: events=%d err=%v", res.Events, err)
 	}
-	if after, _ := st.Events(time.Now().UTC()); len(after) != 2 {
+	if after, _ := st.Events(context.Background(), time.Now().UTC()); len(after) != 2 {
 		t.Errorf("archive changed after the source vanished: %d events", len(after))
 	}
 }
@@ -228,11 +229,11 @@ func TestLostCheckpointDoesNotDoubleCount(t *testing.T) {
 	defer st.Close()
 
 	ing := New(st, dir, quiet, src)
-	if res, _ := ing.Pass(); res.Events != 3 {
+	if res, _ := ing.Pass(context.Background()); res.Events != 3 {
 		t.Fatal("first pass did not ingest 3")
 	}
 
-	before, _ := st.Events(time.Now().UTC())
+	before, _ := st.Events(context.Background(), time.Now().UTC())
 	beforeTurns := query.BuildTurns(before)
 	beforeCost := 0.0
 	for _, turn := range beforeTurns {
@@ -244,11 +245,11 @@ func TestLostCheckpointDoesNotDoubleCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	replay := New(st, dir, quiet, src)
-	if res, _ := replay.Pass(); res.Events != 3 {
+	if res, _ := replay.Pass(context.Background()); res.Events != 3 {
 		t.Fatalf("replay ingested %d raw events, want 3", res.Events)
 	}
 
-	after, _ := st.Events(time.Now().UTC())
+	after, _ := st.Events(context.Background(), time.Now().UTC())
 	if len(after) <= len(before) {
 		t.Fatalf("setup wrong: replay should have appended raw events (%d -> %d)", len(before), len(after))
 	}
@@ -286,7 +287,7 @@ func TestCompactionCollapsesDuplicates(t *testing.T) {
 		Usage: &trace.Usage{InputTokens: 100, OutputTokens: 50, CacheReadInputTokens: 900},
 	}
 	for i := 0; i < 2; i++ {
-		if err := st.Append(ev); err != nil {
+		if err := st.Append(context.Background(), ev); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -335,7 +336,7 @@ func TestCoverageSurvivesRestart(t *testing.T) {
 	defer st.Close()
 
 	first := New(st, dir, quiet, source.NewClaudeCode(filepath.Join(dir, "logs")))
-	if res, _ := first.Pass(); res.Events != 1 {
+	if res, _ := first.Pass(context.Background()); res.Events != 1 {
 		t.Fatalf("first pass ingested %d, want 1", res.Events)
 	}
 	before := first.Coverage()["claude-code"]
@@ -348,7 +349,7 @@ func TestCoverageSurvivesRestart(t *testing.T) {
 	if err := second.loadCheckpoint(); err != nil {
 		t.Fatal(err)
 	}
-	if res, _ := second.Pass(); res.Events != 0 {
+	if res, _ := second.Pass(context.Background()); res.Events != 0 {
 		t.Fatalf("restart re-ingested %d events", res.Events)
 	}
 
@@ -379,7 +380,7 @@ func TestCoverageIsNotDoubleCountedAcrossSaves(t *testing.T) {
 	defer st.Close()
 
 	ing := New(st, dir, quiet, source.NewClaudeCode(filepath.Join(dir, "logs")))
-	ing.Pass()
+	ing.Pass(context.Background())
 
 	// Several saves with no new records in between.
 	for i := 0; i < 3; i++ {

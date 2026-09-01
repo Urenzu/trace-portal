@@ -27,6 +27,20 @@ type TurnRow struct {
 	Model     string `parquet:"model,dict"`
 	Stream    bool   `parquet:"stream"`
 
+	// Who produced this turn, stamped at capture. All three are opaque ids
+	// minted by this system rather than by an identity provider, and all three
+	// dictionary-encode to nothing: a partition holds few tenants, few users and
+	// few machines however many turns it holds.
+	//
+	// TenantID is stored even though isolation will live in the partition path
+	// rather than in a predicate. The path is what a query is allowed to reach;
+	// the column is how a file that ended up in the wrong path can be detected
+	// rather than silently served. A partition whose rows disagree with its own
+	// directory is a bug that must be loud.
+	TenantID  string `parquet:"tenant_id,dict"`
+	UserID    string `parquet:"user_id,dict"`
+	MachineID string `parquet:"machine_id,dict"`
+
 	// Project is the readable folder name and ProjectID a one-way digest of the
 	// full path; the path itself is never recorded. Both dictionary-encode to
 	// almost nothing, since a person works in few projects.

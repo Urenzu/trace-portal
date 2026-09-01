@@ -1,7 +1,6 @@
 package compact
 
 import (
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -17,9 +16,18 @@ import (
 //
 // Field names and tags must match TurnRow exactly; columns are matched by name.
 type SessionRow struct {
-	TS         int64  `parquet:"ts,delta"`
-	SessionID  string `parquet:"session_id,dict"`
-	Model      string `parquet:"model,dict"`
+	TS        int64  `parquet:"ts,delta"`
+	SessionID string `parquet:"session_id,dict"`
+	Model     string `parquet:"model,dict"`
+
+	// Identity is read even in the narrow projection: "whose session was that"
+	// is a question the list itself has to answer once more than one person
+	// shares a tenant, and three dictionary columns cost almost nothing beside
+	// the ones already here. MachineID is left out — it matters for
+	// deduplication, which happens before a session is ever listed.
+	TenantID string `parquet:"tenant_id,dict"`
+	UserID   string `parquet:"user_id,dict"`
+
 	Project    string `parquet:"project,dict"`
 	ProjectID  string `parquet:"project_id,dict"`
 	GitBranch  string `parquet:"git_branch,dict"`
@@ -60,8 +68,20 @@ func (c *Compactor) SessionTurnsRange(from, to time.Time) ([]query.Turn, error) 
 		from, to = to, from
 	}
 
+	idx, err := c.loadIndex()
+	if err != nil {
+		return nil, err
+	}
+	hot, err := c.hotDays()
+	if err != nil {
+		return nil, err
+	}
+
 	var turns []query.Turn
 	for day := truncateDay(from); !day.After(truncateDay(to)); day = day.AddDate(0, 0, 1) {
+		if knownEmpty(idx, hot, day) {
+			continue
+		}
 		dayTurns, err := c.sessionTurnsForDay(day)
 		if err != nil {
 			return nil, err
@@ -81,7 +101,7 @@ func (c *Compactor) SessionTurnsRange(from, to time.Time) ([]query.Turn, error) 
 }
 
 func (c *Compactor) sessionTurnsForDay(day time.Time) ([]query.Turn, error) {
-	rows, err := readOrMissing[SessionRow](filepath.Join(c.PartitionDir(day), turnsFile))
+	rows, err := getParquet[SessionRow](storeContext(), c.objects, partitionFile(day, turnsFile))
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +113,7 @@ func (c *Compactor) sessionTurnsForDay(day time.Time) ([]query.Turn, error) {
 		return turns, nil
 	}
 
-	events, err := c.store.Events(day)
+	events, err := c.store.Events(storeContext(), day)
 	if err != nil {
 		return nil, err
 	}
@@ -105,6 +125,7 @@ func sessionTurn(r SessionRow) query.Turn {
 		SessionID:  r.SessionID,
 		StartedAt:  time.UnixMilli(r.TS).UTC(),
 		Model:      r.Model,
+		Identity:   trace.Identity{TenantID: r.TenantID, UserID: r.UserID},
 		Project:    r.Project,
 		ProjectID:  r.ProjectID,
 		GitBranch:  r.GitBranch,

@@ -91,6 +91,12 @@ type Event struct {
 	SessionID string    `json:"session_id"`
 	TurnID    string    `json:"turn_id"`
 
+	// Identity is stamped by whatever captured the event, at the moment of
+	// capture. Embedded so its fields sit inline in the JSONL rather than
+	// nested, which keeps records written before identity existed decodable:
+	// the keys are simply absent and the fields stay empty.
+	Identity
+
 	// Source names where this event came from: a tailed agent log, or the
 	// proxy. Several sources can observe the same call, so it is only a label,
 	// never an identity.

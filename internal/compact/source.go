@@ -18,8 +18,20 @@ func (c *Compactor) TurnsRange(from, to time.Time) ([]query.Turn, error) {
 		from, to = to, from
 	}
 
+	idx, err := c.loadIndex()
+	if err != nil {
+		return nil, err
+	}
+	hot, err := c.hotDays()
+	if err != nil {
+		return nil, err
+	}
+
 	var turns []query.Turn
 	for day := truncateDay(from); !day.After(truncateDay(to)); day = day.AddDate(0, 0, 1) {
+		if knownEmpty(idx, hot, day) {
+			continue
+		}
 		dayTurns, err := c.turnsForDay(day)
 		if err != nil {
 			return nil, err
@@ -46,7 +58,7 @@ func (c *Compactor) turnsForDay(day time.Time) ([]query.Turn, error) {
 		return turns, nil
 	}
 
-	events, err := c.store.Events(day)
+	events, err := c.store.Events(storeContext(), day)
 	if err != nil {
 		return nil, err
 	}
@@ -147,9 +159,22 @@ func (c *Compactor) AggregateRange(from, to time.Time) (Aggregate, error) {
 		return agg, err
 	}
 
+	hot, err := c.hotDays()
+	if err != nil {
+		return agg, err
+	}
+
 	sessions := map[string]bool{}
 	for day := truncateDay(from); !day.After(truncateDay(to)); day = day.AddDate(0, 0, 1) {
 		wholeDay := !day.Before(firstWhole) && !day.After(lastWhole)
+
+		// Nothing here, and nothing had to be read to find that out. This is
+		// the line that makes a year-wide window cost the same as a week-wide
+		// one over an archive that is mostly idle days -- which every archive
+		// is, since nobody runs an agent every day.
+		if knownEmpty(idx, hot, day) {
+			continue
+		}
 
 		if wholeDay {
 			if idx != nil && idx.add(day, &agg) {
