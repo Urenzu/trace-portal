@@ -22,7 +22,6 @@ import (
 
 	"github.com/Urenzu/trace-portal/internal/api"
 	"github.com/Urenzu/trace-portal/internal/collect"
-	"github.com/Urenzu/trace-portal/internal/compact"
 	"github.com/Urenzu/trace-portal/internal/identity"
 	"github.com/Urenzu/trace-portal/internal/ingest"
 	"github.com/Urenzu/trace-portal/internal/objectstore"
@@ -209,8 +208,6 @@ func run(args []string) error {
 	// what this run learned.
 	defer ingester.Close()
 
-	apiHandler := api.New(st, compactor, ingester, log).Handler()
-
 	// Receiving is a separate registry from the one this process captures into.
 	// A server holds many tenants under <data>/tenants/<id>/; the local archive
 	// is this machine own and stays where it has always been. Keeping them
@@ -240,7 +237,7 @@ func run(args []string) error {
 		}
 	}
 
-	authHandler, err := buildAuth(context.Background(), authOptions{
+	signin, err := buildAuth(context.Background(), authOptions{
 		Issuer:    *oidcIssuer,
 		ClientID:  *oidcClientID,
 		Secret:    *oidcSecret,
@@ -252,9 +249,22 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if authHandler != nil {
+	var authHandler http.Handler
+	// The read API resolves its tenant the same way ingest does: from a
+	// credential. With sign-in configured that is the session cookie, and a
+	// browser sees its own account's data and nothing else. Without it, this is
+	// the local tool and the one archive answers every request.
+	//
+	// Coverage is attached only in the local case, because it describes the
+	// tailer reading this machine's transcripts -- there is no such thing for a
+	// tenant whose turns arrived over the wire.
+	resolver := api.Fixed(api.Scope{Store: st, Compact: compactor, Coverage: ingester})
+	if signin != nil {
+		authHandler = signin.Handler
+		resolver = api.FromSession(signin.Sessions, receiving)
 		log.Info("sign-in enabled", "issuer", *oidcIssuer)
 	}
+	apiHandler := api.New(resolver, log).Handler()
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -266,7 +276,14 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	go runCompaction(ctx, compactor, *compactEvery, log)
+	// Every registry, not just this process's own. A server sweeping only the
+	// tenant it happens to capture into would compact one archive and leave
+	// every customer's window growing in Postgres forever.
+	registries := []*tenant.Registry{registry}
+	if receiving != nil {
+		registries = append(registries, receiving)
+	}
+	go runCompaction(ctx, registries, *compactEvery, log)
 
 	go func() {
 		defer func() {
@@ -403,7 +420,7 @@ func route(proxyHandler, apiHandler, uiHandler, authHandler http.Handler, proxyE
 // then on a ticker. Failures are logged and retried on the next tick rather
 // than taken as fatal: the raw JSONL is still the source of truth, and the read
 // path falls back to it for any day without a partition.
-func runCompaction(ctx context.Context, c *compact.Compactor, every time.Duration, log *slog.Logger) {
+func runCompaction(ctx context.Context, registries []*tenant.Registry, every time.Duration, log *slog.Logger) {
 	if every <= 0 {
 		log.Info("compaction disabled")
 		return
@@ -415,15 +432,36 @@ func runCompaction(ctx context.Context, c *compact.Compactor, every time.Duratio
 		}
 	}()
 
-	run := func() {
+	// One tenant's failure must not stop the others. A bucket that rejects one
+	// customer's writes is their problem to fix; leaving every other customer
+	// uncompacted while it is investigated would make it everybody's.
+	compactTenant := func(reg *tenant.Registry, id string) {
 		start := time.Now()
-		n, err := c.CompactAll()
+		storage, err := reg.For(id)
 		if err != nil {
-			log.Warn("compaction failed", "err", err)
+			log.Warn("could not open tenant storage for compaction", "tenant", id, "err", err)
+			return
+		}
+		n, err := storage.Compactor.CompactAll()
+		if err != nil {
+			log.Warn("compaction failed", "tenant", id, "err", err)
 			return
 		}
 		if n > 0 {
-			log.Info("compacted days", "count", n, "took", time.Since(start).Round(time.Millisecond))
+			log.Info("compacted days", "tenant", id, "count", n, "took", time.Since(start).Round(time.Millisecond))
+		}
+	}
+
+	run := func() {
+		for _, reg := range registries {
+			tenants, err := reg.Tenants()
+			if err != nil {
+				log.Warn("could not list tenants for compaction", "err", err)
+				continue
+			}
+			for _, id := range tenants {
+				compactTenant(reg, id)
+			}
 		}
 	}
 

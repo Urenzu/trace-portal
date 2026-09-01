@@ -183,6 +183,15 @@ func (r *Registry) For(tenantID string) (*Storage, error) {
 		}
 		c = local
 	}
+	// A database-backed window is released once a day is compacted; a file one
+	// is not. The file per day *is* the archive on somebody's laptop and costs
+	// nothing to keep, whereas a Postgres row costs money per gigabyte and
+	// holds the same day at roughly fifty times the size of its partition
+	// (measured: 7,976 events, 21 MB in Postgres against 440 KB of Parquet).
+	// Without this the hot window is retained forever alongside the cold one
+	// and a deployment pays for both copies of everything, permanently.
+	c.PruneCompacted(r.pool != nil)
+
 	s := &Storage{Store: backend, Compactor: c, Root: dir}
 	r.open[tenantID] = s
 	return s, nil

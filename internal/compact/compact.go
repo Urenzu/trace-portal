@@ -38,6 +38,10 @@ type Compactor struct {
 	// bucket.
 	root string
 
+	// prune releases a day from the hot window once its partition is verified.
+	// See PruneCompacted.
+	prune bool
+
 	// index caches the consolidated rollup. See loadIndex for why holding it is
 	// safe and why invalidating it is trivial.
 	indexMu sync.RWMutex
@@ -158,6 +162,7 @@ func (c *Compactor) CompactDay(day time.Time, force bool) (bool, error) {
 			return false, fmt.Errorf("write %s for %s: %w", w.name, partitionKey(day), err)
 		}
 	}
+
 	return true, nil
 }
 
@@ -185,6 +190,18 @@ func (c *Compactor) CompactAll() (int, error) {
 	// build picks one up without needing to be recompacted.
 	if written > 0 || !c.hasIndex() {
 		if err := c.RebuildIndex(); err != nil {
+			return written, err
+		}
+	}
+
+	// Releasing compacted days is a separate sweep rather than a step inside
+	// CompactDay, and that is what makes it self-healing. It looks at what the
+	// hot window still holds rather than at what this run happened to write, so
+	// a day whose prune failed last time is retried, and a deployment that has
+	// been compacting for months without pruning drains on its first run of a
+	// build that does.
+	if c.prune {
+		if err := c.pruneHotWindow(); err != nil {
 			return written, err
 		}
 	}

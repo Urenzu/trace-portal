@@ -37,6 +37,16 @@ type authOptions struct {
 	Collect *tenant.Registry
 }
 
+// signIn is what buildAuth hands back once sign-in is configured: the HTTP
+// surface, and the sessions the read API resolves a tenant from. They are
+// returned together because they must agree -- a read API routing on a
+// different session store from the one the login flow writes to would serve
+// every browser the same data while looking correct.
+type signIn struct {
+	Handler  http.Handler
+	Sessions *auth.Server
+}
+
 // discoveryTimeout bounds OIDC discovery at startup. A provider that cannot be
 // reached in ten seconds will not serve a sign-in either, and failing here —
 // loudly, before the listener opens — beats failing under a person who just
@@ -44,7 +54,7 @@ type authOptions struct {
 const discoveryTimeout = 10 * time.Second
 
 // buildAuth returns nil when sign-in is not configured.
-func buildAuth(parent context.Context, o authOptions) (http.Handler, error) {
+func buildAuth(parent context.Context, o authOptions) (*signIn, error) {
 	if strings.TrimSpace(o.Issuer) == "" {
 		// Nothing configured, and nothing half-configured either: complain if
 		// the other flags were set, because silently ignoring them is how a
@@ -124,7 +134,7 @@ func buildAuth(parent context.Context, o authOptions) (http.Handler, error) {
 		}
 		cs.Routes(mux)
 	}
-	return mux, nil
+	return &signIn{Handler: mux, Sessions: server}, nil
 }
 
 func isLoopbackHTTP(base string) bool {

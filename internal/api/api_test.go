@@ -36,7 +36,8 @@ func newTestServer(t *testing.T, events ...trace.Event) (http.Handler, *store.St
 	if err != nil {
 		t.Fatalf("new compactor: %v", err)
 	}
-	return New(st, c, nil, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler(), st
+	scope := Scope{Store: st, Compact: c}
+	return New(Fixed(scope), slog.New(slog.NewTextHandler(io.Discard, nil))).Handler(), st
 }
 
 func get(t *testing.T, h http.Handler, path string, into any) int {

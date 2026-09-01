@@ -76,10 +76,14 @@ type ProjectDetail struct {
 // per-project rollup, one row per day. Only the cuts by branch, model and tool
 // need the sessions themselves — read once here rather than by the browser.
 func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
 	from, to := s.window(r)
 	id := r.PathValue("id")
 
-	agg, err := s.compact.AggregateRange(from, to)
+	agg, err := sc.Compact.AggregateRange(from, to)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
@@ -99,7 +103,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		detail.CacheHitRate = inputCacheHitRate(detail.Usage)
 	}
 
-	if detail.ByDay, err = s.compact.ProjectDaily(from, to, id); err != nil {
+	if detail.ByDay, err = sc.Compact.ProjectDaily(from, to, id); err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -108,7 +112,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 	// which branches, which models, and which tools. Rolling them up into
 	// sessions discards the per-turn detail, so the turns come back here and the
 	// roll-up happens after the histograms are taken.
-	turns, err := s.compact.SessionTurnsRange(from, to)
+	turns, err := sc.Compact.SessionTurnsRange(from, to)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return

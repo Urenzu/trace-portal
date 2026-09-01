@@ -46,18 +46,6 @@ type CoverageReporter interface {
 	Coverage() map[string]*source.Coverage
 }
 
-// Server exposes the query API. Reads go through the compactor, which serves
-// Parquet partitions where they exist and falls back to raw JSONL otherwise;
-// blob fetches go straight to the store.
-type Server struct {
-	store    Archive
-	compact  *compact.Compactor
-	coverage CoverageReporter
-	log      *slog.Logger
-}
-
-// New builds a Server. coverage may be nil, in which case the health endpoint
-// simply reports none.
 // Archive is what the read API needs from the hot window: which days exist, the
 // identity it stamps, and the payloads behind a turn. Everything analytical
 // comes from the compactor instead.
@@ -67,11 +55,81 @@ type Archive interface {
 	GetBlob(ctx context.Context, ref string) ([]byte, error)
 }
 
-func New(st Archive, c *compact.Compactor, coverage CoverageReporter, log *slog.Logger) *Server {
+// Scope is the storage that answers one request: one tenant's hot window, its
+// compactor, and -- only for the archive this process captures into -- what
+// ingestion understood about the transcripts it read.
+//
+// Coverage is per-process, not per-tenant: it describes a tailer reading this
+// machine's disk. A server holding somebody else's shipped turns has no tailer
+// for them, so it is nil there and the health endpoint reports none.
+type Scope struct {
+	Store    Archive
+	Compact  *compact.Compactor
+	Coverage CoverageReporter
+}
+
+// ErrNoSession means the request carried no session on a server that requires
+// one. It is separated from other refusals because it is the one a browser can
+// act on: it is answered with a 401, which is the UI's cue to offer sign-in.
+var ErrNoSession = errors.New("not signed in")
+
+// Resolver decides whose data answers a request.
+//
+// This is the read side of the rule the ingest endpoint already follows: the
+// tenant comes from a credential and from nothing else. Handlers below receive
+// a Scope and hold no reference to any other, which is why no query in this
+// package carries a tenant predicate -- there is nothing for one to filter.
+type Resolver interface {
+	Scope(r *http.Request) (Scope, error)
+}
+
+// Fixed is the local tool's resolver: one archive, no sign-in, the same answer
+// to every request.
+//
+// The local tool goes through the resolver rather than around it so the
+// multi-tenant path is the path every request takes, including the ones run on
+// a laptop. A branch that only executes in production is a branch nobody tests.
+func Fixed(sc Scope) Resolver { return fixed{sc} }
+
+type fixed struct{ sc Scope }
+
+func (f fixed) Scope(*http.Request) (Scope, error) { return f.sc, nil }
+
+// Server exposes the query API. Reads go through the compactor, which serves
+// Parquet partitions where they exist and falls back to raw JSONL otherwise;
+// blob fetches go straight to the store.
+type Server struct {
+	tenants Resolver
+	log     *slog.Logger
+}
+
+// New builds a Server over a resolver.
+func New(tenants Resolver, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{store: st, compact: c, coverage: coverage, log: log}
+	return &Server{tenants: tenants, log: log}
+}
+
+// scope resolves the tenant this request may read, and writes the refusal
+// itself when there is none.
+//
+// Every handler starts here, and one that forgot would not compile: there is no
+// store and no compactor on the Server to reach past it.
+func (s *Server) scope(w http.ResponseWriter, r *http.Request) (Scope, bool) {
+	sc, err := s.tenants.Scope(r)
+	if err != nil {
+		if errors.Is(err, ErrNoSession) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+			return Scope{}, false
+		}
+		// Everything else is one answer. A caller learning that a tenant exists
+		// but is not theirs has learned something about another tenant.
+		s.log.Warn("refused a request that resolved to no tenant", "err", err)
+		s.fail(w, http.StatusForbidden, errors.New("not permitted"))
+		return Scope{}, false
+	}
+	return sc, true
 }
 
 // Handler returns the API routes, all rooted at /api/.
@@ -87,7 +145,24 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	days, err := s.store.Days(r.Context())
+	// Health answers before sign-in does. A container probe and the UI's first
+	// request both hit this, and neither has a session: making it 401 would
+	// mean an orchestrator restarting a healthy server in a loop, and a UI with
+	// no way to discover that it should offer a sign-in button.
+	sc, err := s.tenants.Scope(r)
+	if errors.Is(err, ErrNoSession) {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "signed_in": false})
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusForbidden, errors.New("not permitted"))
+		return
+	}
+
+	// From the compactor rather than the store, because on a server the hot
+	// window no longer holds compacted days -- asking it would report an
+	// archive that begins at the last compaction.
+	days, err := sc.Compact.Days(r.Context())
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
@@ -96,9 +171,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// unenrolled local install, which can offer to sign in, or an enrolled one,
 	// which can say whose data is on screen. Only the ids are exposed; the
 	// collector token never leaves the enrollment file.
-	id := s.store.Identity()
+	id := sc.Store.Identity()
 	resp := map[string]any{
 		"status":        "ok",
+		"signed_in":     true,
 		"days_captured": len(days),
 		"identity": map[string]any{
 			"tenant_id": id.TenantID,
@@ -113,20 +189,24 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		// Per-day volume, not just the span. A first and last date read as
 		// continuous coverage; they are not, and the days with nothing in them
 		// are the shape of how the agent was actually used.
-		series, err := s.compact.DailyRange(days[0], days[len(days)-1])
+		series, err := sc.Compact.DailyRange(days[0], days[len(days)-1])
 		if err != nil {
 			s.fail(w, http.StatusInternalServerError, err)
 			return
 		}
 		resp["days"] = series
 	}
-	if s.coverage != nil {
-		resp["coverage"] = s.coverage.Coverage()
+	if sc.Coverage != nil {
+		resp["coverage"] = sc.Coverage.Coverage()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
 	from, to := s.window(r)
 	limit, ok := intParam(r, "limit")
 	if !ok {
@@ -150,9 +230,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	var page compact.SessionPage
 	var err error
 	if order.Lazy() {
-		page, err = s.compact.SessionsPage(from, to, limit, cursor, filter)
+		page, err = sc.Compact.SessionsPage(from, to, limit, cursor, filter)
 	} else {
-		page, err = s.compact.SessionsRanked(from, to, limit, cursor, filter, order)
+		page, err = sc.Compact.SessionsRanked(from, to, limit, cursor, filter, order)
 	}
 	if err != nil {
 		s.fail(w, http.StatusBadRequest, err)
@@ -162,15 +242,19 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
 	from, to := s.window(r)
 	id := r.PathValue("id")
 
-	detail, ok, err := s.compact.SessionDetail(from, to, id)
+	detail, found, err := sc.Compact.SessionDetail(from, to, id)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	if !ok {
+	if !found {
 		s.fail(w, http.StatusNotFound, fmt.Errorf("session %q not found in this window", id))
 		return
 	}
@@ -220,14 +304,18 @@ type Stats struct {
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
 	from, to := s.window(r)
-	agg, err := s.compact.AggregateRange(from, to)
+	agg, err := sc.Compact.AggregateRange(from, to)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
 	}
 	stats := statsFromAggregate(agg, from, to)
-	if stats.ByDay, err = s.compact.DailyRange(from, to); err != nil {
+	if stats.ByDay, err = sc.Compact.DailyRange(from, to); err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -235,7 +323,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
-	payload, err := s.store.GetBlob(r.Context(), r.PathValue("ref"))
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	payload, err := sc.Store.GetBlob(r.Context(), r.PathValue("ref"))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			s.fail(w, http.StatusNotFound, fmt.Errorf("blob not found"))
