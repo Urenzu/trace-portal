@@ -122,9 +122,19 @@ func Load(dataDir string) (Enrollment, error) {
 
 // Save writes the enrollment atomically. The login flow calls this; so does the
 // first run that mints a local one.
+//
+// Creates the data directory. This is the first thing in the process to touch
+// it — the enrollment is loaded before the store is opened, because the store
+// needs the identity it will stamp — so it cannot assume something else has
+// made it. Pointing the tool at a fresh directory otherwise failed with a
+// path-not-found on a temporary file, which reads as a bug in the archive
+// rather than as "that directory does not exist yet".
 func Save(dataDir string, e Enrollment) error {
 	if err := e.validate(); err != nil {
 		return err
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
 	}
 	raw, err := json.MarshalIndent(e, "", "  ")
 	if err != nil {

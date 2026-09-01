@@ -124,3 +124,21 @@ func TestOverridesApplyLocallyAndAreIgnoredOnceEnrolled(t *testing.T) {
 		t.Fatalf("environment re-pointed an enrolled collector: %+v", got)
 	}
 }
+
+// Pointing the tool at a directory that does not exist yet must work. The
+// enrollment is loaded before the store is opened -- the store needs the
+// identity it will stamp -- so nothing else has created the directory by then.
+func TestLoadCreatesTheDataDirectory(t *testing.T) {
+	fresh := filepath.Join(t.TempDir(), "does", "not", "exist", "yet")
+
+	e, err := Load(fresh)
+	if err != nil {
+		t.Fatalf("load into a fresh directory: %v", err)
+	}
+	if !e.Local() || e.MachineID == "" {
+		t.Fatalf("incomplete enrollment: %+v", e)
+	}
+	if _, err := os.Stat(filepath.Join(fresh, enrollmentFile)); err != nil {
+		t.Fatalf("enrollment was not persisted: %v", err)
+	}
+}
