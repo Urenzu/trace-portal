@@ -91,7 +91,10 @@ One port carries all three surfaces: `/v1/…` is proxied upstream when `-proxy`
 is set, `/api/…` is the query API, and everything else is the UI.
 
 - **Dashboard** — spend, what caching saved, cache hit rate, where the tokens
-  went, and a breakdown per project.
+  went, and a breakdown per project. The project and session lists open to
+  their full history inside their own scroll region, so opening one does not
+  lengthen the page by however many rows happen to exist, and the session list
+  fetches its next page as that region is scrolled.
 - **Session timeline** — one column per turn, positioned by when it started and
   stacked by how its tokens were billed. Wide gaps are where a five-minute
   cache window can lapse, and the cache-write band that follows is the reload
@@ -134,7 +137,7 @@ without Node installed. Rebuild it whenever you change `web/`.
 
 All endpoints accept `?from=` and `?to=` (RFC3339 or `YYYY-MM-DD`) or `?days=N`;
 the window defaults to 7 days. `/api/sessions` pages with `?limit=` (default 50,
-max 500) and `?cursor=`.
+max 500) and `?cursor=`, and searches with `?q=`.
 
 Costs come from first-party Anthropic list prices, including the cache
 multipliers — reads at 0.1x base input, writes at 1.25x (5-minute TTL) or 2x
@@ -222,6 +225,36 @@ Partitions are ordinary Parquet with no engine lock-in:
 ```sql
 SELECT model, sum(cost_usd) FROM 'compact/*/turns.parquet' GROUP BY model
 ```
+
+### Searching history
+
+There is no text index, and there should not be one. Nothing here records
+prompts, responses, or tool arguments, so there is no corpus to index. What a
+session has is a handful of columns — project, branch, model, the tools it
+invoked, its id — every one of them already dictionary-encoded in the partitions
+a listing reads. A typed predicate over those columns answers the questions
+people actually ask, and costs a string compare per candidate against an index
+that would have to be built, stored, and kept consistent with the archive.
+
+```
+fin-agentic            any of those columns contains it
+project:trace-portal   that column
+branch:main model:opus several terms, all of which must hold
+tool:PowerShell
+has:errors
+cost:>5   turns:>100
+```
+
+Matching is case-insensitive and by substring, because nobody remembers whether
+the repository was `fin-agentic` or `fin_agentic`, and a search that returns
+nothing for a near-miss is worse than one that returns a few extra rows.
+
+It runs server-side, inside the same backwards scan that fills a page. Filtering
+in the browser would only ever search the page already loaded, which is the
+wrong answer to "find that session from three weeks ago". The cost is that a
+narrow search walks the whole window instead of terminating early, so the UI
+says how far back it looked — when a session is missing, the reason is usually
+the window rather than the query.
 
 ### Why this keeps its own archive
 

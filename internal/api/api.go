@@ -92,8 +92,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Listing walks days backwards and stops once the page is full, so the
-	// common case reads one partition rather than the whole window.
-	page, err := s.compact.SessionsPage(from, to, limit, r.URL.Query().Get("cursor"))
+	// common case reads one partition rather than the whole window. A search
+	// narrows what qualifies, so it runs here rather than in the browser: the
+	// alternative would only ever search the page already loaded.
+	filter := compact.ParseFilter(r.URL.Query().Get("q"))
+	page, err := s.compact.SessionsPage(from, to, limit, r.URL.Query().Get("cursor"), filter)
 	if err != nil {
 		s.fail(w, http.StatusBadRequest, err)
 		return

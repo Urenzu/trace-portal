@@ -104,3 +104,62 @@ export function BarRow({
     </div>
   );
 }
+
+/**
+ * The search box used above a history list.
+ *
+ * One input, not a row of dropdowns. The searchable space here is small and
+ * well-typed — project, branch, model, tool, id — so a person can hold it in
+ * their head, and typing `project:foo` is faster than opening a menu. The hint
+ * text carries the syntax so it never has to be remembered.
+ */
+export function SearchBox({
+  value,
+  onChange,
+  placeholder,
+  hint,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  placeholder: string;
+  hint?: string;
+}) {
+  return (
+    <div className="search">
+      <svg className="search-icon" viewBox="0 0 14 14" aria-hidden="true">
+        <circle
+          cx="6"
+          cy="6"
+          r="4.2"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+        />
+        <path
+          d="M9.2 9.2L12.5 12.5"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+      </svg>
+      <input
+        type="search"
+        value={value}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        title={hint}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {value && (
+        <button
+          type="button"
+          className="search-clear"
+          aria-label="Clear search"
+          onClick={() => onChange("")}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+}

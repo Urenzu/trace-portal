@@ -158,8 +158,8 @@ export const api = {
 
   stats: (days: number) => get<Stats>("/api/stats", { days }),
 
-  sessions: (days: number, limit: number, cursor?: string) =>
-    get<SessionPage>("/api/sessions", { days, limit, cursor }),
+  sessions: (days: number, limit: number, cursor?: string, q?: string) =>
+    get<SessionPage>("/api/sessions", { days, limit, cursor, q }),
 
   session: (id: string, days: number) =>
     get<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`, { days }),

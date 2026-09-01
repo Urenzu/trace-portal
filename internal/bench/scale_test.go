@@ -142,7 +142,7 @@ func TestScaleJSONLvsParquet(t *testing.T) {
 		from, to := end.AddDate(0, 0, -364), end.Add(24*time.Hour)
 		runtime.GC()
 		t0 := time.Now()
-		page, err := c.SessionsPage(from, to, 50, "")
+		page, err := c.SessionsPage(from, to, 50, "", compact.Filter{})
 		if err != nil {
 			t.Fatal(err)
 		}

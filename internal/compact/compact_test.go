@@ -563,7 +563,7 @@ func TestSessionsPageMatchesUnpaged(t *testing.T) {
 		if pages > 50 {
 			t.Fatal("pagination did not terminate")
 		}
-		page, err := c.SessionsPage(from, to, 3, cursor)
+		page, err := c.SessionsPage(from, to, 3, cursor, Filter{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -597,7 +597,7 @@ func TestSessionsPageMatchesUnpaged(t *testing.T) {
 func TestSessionsPageStopsEarly(t *testing.T) {
 	c, from, to := buildDays(t, 30, 4, 2)
 
-	page, err := c.SessionsPage(from, to, 3, "")
+	page, err := c.SessionsPage(from, to, 3, "", Filter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func TestSessionsPageHandlesSessionSpanningMidnight(t *testing.T) {
 		t.Fatalf("compact: %v", err)
 	}
 
-	page, err := c.SessionsPage(start, end.Add(24*time.Hour), 50, "")
+	page, err := c.SessionsPage(start, end.Add(24*time.Hour), 50, "", Filter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -659,7 +659,7 @@ func TestSessionsPageHandlesSessionSpanningMidnight(t *testing.T) {
 
 func TestSessionsPageRejectsBadCursor(t *testing.T) {
 	c, from, to := buildDays(t, 2, 1, 1)
-	if _, err := c.SessionsPage(from, to, 10, "!!!not-base64!!!"); err == nil {
+	if _, err := c.SessionsPage(from, to, 10, "!!!not-base64!!!", Filter{}); err == nil {
 		t.Error("expected an error for a malformed cursor")
 	}
 }
@@ -810,7 +810,7 @@ func TestSessionsPageKeepsResumedSessionWhole(t *testing.T) {
 		t.Fatalf("compact: %v", err)
 	}
 
-	page, err := c.SessionsPage(today.AddDate(0, 0, -7), today, 50, "")
+	page, err := c.SessionsPage(today.AddDate(0, 0, -7), today, 50, "", Filter{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -69,12 +69,17 @@ func (c cursor) after(s query.Session) bool {
 // SessionsPage lists sessions newest-first, reading only as many daily
 // partitions as the page needs.
 //
-// Days are walked backwards from the newest. A session's turns are contiguous
-// in time, so once a whole day older than a session's first turn has been read,
-// that session cannot gain more turns and is safe to emit. Sessions still open
-// at the scan frontier are held back until they are complete, which is what
-// keeps a paged list identical to an unpaged one.
-func (c *Compactor) SessionsPage(from, to time.Time, limit int, encodedCursor string) (SessionPage, error) {
+// Days are walked backwards from the newest. Once no older day can add to a
+// session it is complete and safe to emit; sessions still open at the scan
+// frontier are held back, which is what keeps a paged list identical to an
+// unpaged one.
+//
+// The filter is applied here rather than in the browser, so a search covers the
+// whole window instead of whichever page happens to be loaded. It costs a
+// string compare per completed session, and narrows nothing that has been read
+// — a narrow search simply walks further back before the page fills, which
+// DaysScanned reports.
+func (c *Compactor) SessionsPage(from, to time.Time, limit int, encodedCursor string, filter Filter) (SessionPage, error) {
 	from, to = from.UTC(), to.UTC()
 	if to.Before(from) {
 		from, to = to, from
@@ -127,7 +132,7 @@ func (c *Compactor) SessionsPage(from, to time.Time, limit int, encodedCursor st
 			if oldestDay(idx, id, ts).After(day) {
 				s := query.SessionsFromTurns(ts)[0]
 				delete(pending, id)
-				if cur.after(s) {
+				if cur.after(s) && filter.Match(s) {
 					complete = append(complete, s)
 				}
 			}
@@ -145,7 +150,7 @@ func (c *Compactor) SessionsPage(from, to time.Time, limit int, encodedCursor st
 	if exhausted {
 		for _, ts := range pending {
 			s := query.SessionsFromTurns(ts)[0]
-			if cur.after(s) {
+			if cur.after(s) && filter.Match(s) {
 				complete = append(complete, s)
 			}
 		}
