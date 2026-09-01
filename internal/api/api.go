@@ -26,6 +26,17 @@ const defaultWindowDays = 7
 const (
 	defaultPageSize = 50
 	maxPageSize     = 500
+
+	// maxWindowDays bounds how far back any query may reach.
+	//
+	// Every read path walks the window a day at a time, and a day with no data
+	// still costs the file opens that establish that. An unbounded `days` is
+	// therefore an unbounded amount of work from a single URL: `?days=200000`
+	// measured at fifteen seconds of pure syscalls on an archive holding one
+	// month. Ten years is far more history than this tool can hold — the
+	// transcripts it reads are pruned after about one — so the ceiling costs
+	// nothing real and turns a hang into an ordinary answer.
+	maxWindowDays = 3650
 )
 
 // CoverageReporter supplies what ingestion understood, so the UI can say what
@@ -223,7 +234,18 @@ func (s *Server) window(r *http.Request) (time.Time, time.Time) {
 	to := parseTime(r.URL.Query().Get("to"), time.Now().UTC())
 	from := parseTime(r.URL.Query().Get("from"), to.AddDate(0, 0, -defaultWindowDays))
 	if days, ok := intParam(r, "days"); ok && days > 0 {
+		if days > maxWindowDays {
+			days = maxWindowDays
+		}
 		from = to.AddDate(0, 0, -days)
+	}
+	// An explicit `from` is clamped too, and a reversed range is put back in
+	// order rather than being walked backwards to no result.
+	if earliest := to.AddDate(0, 0, -maxWindowDays); from.Before(earliest) {
+		from = earliest
+	}
+	if from.After(to) {
+		from, to = to, from
 	}
 	return from, to
 }

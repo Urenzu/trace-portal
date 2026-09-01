@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -311,5 +312,70 @@ func TestSessionsEndpointRejectsBadCursor(t *testing.T) {
 	h, _ := newTestServer(t)
 	if code := get(t, h, "/api/sessions?cursor=%21%21%21", nil); code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", code)
+	}
+}
+
+// A blob reference is split into a directory and a filename, so a 64-character
+// string carrying separators would resolve outside the blob store. It reaches
+// the handler straight from a URL, so the alphabet is checked, not just the
+// length.
+func TestBlobEndpointRejectsTraversal(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	for _, ref := range []string{
+		"../" + strings.Repeat("a", 61),
+		".." + strings.Repeat("a", 62),
+		"..%2F" + strings.Repeat("a", 59),
+		strings.Repeat("A", 64), // hex digests this store writes are lowercase
+		strings.Repeat("z", 64),
+		"/etc/passwd",
+	} {
+		path := "/api/blobs/" + url.PathEscape(ref)
+		if code := get(t, h, path, nil); code == http.StatusOK {
+			t.Errorf("ref %q returned 200, want a rejection", ref)
+		}
+	}
+}
+
+// Every read path walks the window one day at a time, so an unbounded `days`
+// is an unbounded amount of work from a single URL.
+func TestWindowIsClamped(t *testing.T) {
+	h, _ := newTestServer(t, sampleEvents(time.Now().UTC().Add(-time.Minute))...)
+
+	var stats struct {
+		From time.Time `json:"from"`
+		To   time.Time `json:"to"`
+	}
+	if code := get(t, h, "/api/stats?days=200000", &stats); code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if span := stats.To.Sub(stats.From).Hours() / 24; span > maxWindowDays+1 {
+		t.Errorf("window = %.0f days, want it clamped to %d", span, maxWindowDays)
+	}
+
+	// An explicit `from` is clamped by the same ceiling.
+	if code := get(t, h, "/api/stats?from=1970-01-01", &stats); code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if span := stats.To.Sub(stats.From).Hours() / 24; span > maxWindowDays+1 {
+		t.Errorf("window from 1970 = %.0f days, want it clamped", span)
+	}
+}
+
+// A reversed range is a typo, not a reason to return nothing.
+func TestWindowReversedRangeIsOrdered(t *testing.T) {
+	now := time.Now().UTC().Add(-time.Hour)
+	h, _ := newTestServer(t, sampleEvents(now)...)
+
+	var stats struct {
+		Turns int `json:"turns"`
+	}
+	from := now.Add(-time.Hour).Format("2006-01-02")
+	to := now.Add(48 * time.Hour).Format("2006-01-02")
+	if code := get(t, h, "/api/stats?from="+to+"&to="+from, &stats); code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if stats.Turns == 0 {
+		t.Error("turns = 0, want the range put back in order")
 	}
 }

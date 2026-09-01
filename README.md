@@ -15,6 +15,11 @@ working.
 
 Everything stays on your machine. Nothing is uploaded anywhere.
 
+The server binds to loopback and has no authentication, which is the right
+trade for a single-user local tool. Binding it wider with `-addr` exposes the
+whole archive to anyone who can reach the port; there is no access control to
+fall back on.
+
 ## Quick start
 
 Requires Go 1.25+.
@@ -90,19 +95,33 @@ The frontend is built into the binary, so there is nothing to serve separately.
 One port carries all three surfaces: `/v1/…` is proxied upstream when `-proxy`
 is set, `/api/…` is the query API, and everything else is the UI.
 
+- **Activity** — a calendar of the selected window, one cell per day, beside
+  the turns, spend, active days and busiest day it holds. A first and last date
+  read as continuous coverage and rarely are: fifteen active days inside a
+  twenty-nine day span is the shape no total can show. Days before the archive
+  begins are drawn as their own state, because "nothing was recorded" and
+  "nothing could have been recorded" are different claims. Coverage caveats —
+  which builds produced the data, which fields they never emitted — sit behind
+  a disclosure.
 - **Dashboard** — spend, what caching saved, cache hit rate, where the tokens
-  went, and a breakdown per project. The project and session lists open to
-  their full history inside their own scroll region, so opening one does not
-  lengthen the page by however many rows happen to exist, and the session list
-  fetches its next page as that region is scrolled. Both drill in: a project
-  opens its own page, a session opens its timeline.
-- **Data coverage** — whether the figures above can be trusted. Every gap is
-  reported with the share of turns it touches and the figure it moves, because
-  a count on its own ("1,815 turns without thinking tokens") does not answer
-  the question it raises.
-- **Project** — one repository's spend, and its sessions. Scoped by the path
-  digest rather than the display name: two directories can share a name, and a
-  link keyed on what is written on screen would quietly merge them.
+  went, spend over time, and a breakdown per project. The error tile is a way
+  in rather than a readout: clicking it aims the session list at `has:errors`.
+  The project and session lists open to their full history inside their own
+  scroll region, so opening one does not lengthen the page by however many rows
+  happen to exist, and the session list fetches its next page as that region is
+  scrolled. Both drill in: a project opens its own page, a session opens its
+  timeline.
+- **Spend over time** — daily cost across the window, folding to weeks above
+  120 days where a bar would be thinner than its own hover target. One series,
+  so no legend; one axis, so the cache hit rate that explains a spike is in the
+  tooltip rather than on a second y-scale.
+- **Project** — one repository over time: spend, the median session cost, cache
+  hit rate, a spend trend, and a per-branch table. Branch is the cut that earns
+  its place — on real data one repository showed `main` at a 45% cache hit rate
+  against 99% on its feature branches, which is a concrete thing to go and look
+  at. Branch rows filter the session list below them. Scoped by the path digest
+  rather than the display name: two directories can share a name, and a link
+  keyed on what is written on screen would quietly merge them.
 - **Session timeline** — one column per turn, positioned by when it started and
   stacked by how its tokens were billed. Wide gaps are where a five-minute
   cache window can lapse, and the cache-write band that follows is the reload
@@ -115,11 +134,17 @@ is set, `/api/…` is the query API, and everything else is the UI.
   grouped under the day they ran on, because a resumed session's clock times
   otherwise read as a sorting fault.
 
+Every view is linkable. The selected window rides in the hash alongside the
+route — `#/session/<id>?d=30` — so a shared link opens on the window it was read
+on, and the back button undoes a window change the way it undoes a drill-in.
+
 Colour choices were validated for colour-vision deficiency and for contrast
 against both the light and dark surfaces, and no value is ever encoded by
-colour alone. Only one chart uses colour to mean something — the token classes;
-rankings of nominal things are neutral, because length already carries the
-magnitude there.
+colour alone. Colour is only allowed to mean something twice: the four token
+classes, where it carries identity, and the single hue shared by the activity
+calendar and the spend chart, where it carries magnitude. Rankings of nominal
+things — tool names, model names — are neutral, because length already carries
+the magnitude there.
 
 Working on the frontend:
 
@@ -137,15 +162,30 @@ without Node installed. Rebuild it whenever you change `web/`.
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/health` | Status, days captured, and ingest coverage |
-| `GET /api/sessions` | Sessions in the window, newest first (paged) |
+| `GET /api/health` | Status, days captured, per-day volume, ingest coverage |
+| `GET /api/sessions` | Sessions in the window (paged, searchable, sortable) |
 | `GET /api/sessions/{id}` | One session with its turns |
-| `GET /api/stats` | Totals: cost, cache hit rate, projects, tools |
+| `GET /api/stats` | Totals plus a daily series: cost, cache, projects, tools |
+| `GET /api/projects/{id}` | One project: totals, daily series, branches, tools |
 | `GET /api/blobs/{ref}` | A stored payload, fetched on demand |
 
 All endpoints accept `?from=` and `?to=` (RFC3339 or `YYYY-MM-DD`) or `?days=N`;
-the window defaults to 7 days. `/api/sessions` pages with `?limit=` (default 50,
-max 500) and `?cursor=`, and searches with `?q=`.
+the window defaults to 7 days and is clamped to ten years, since every read path
+walks it a day at a time and the transcripts it reads are pruned after about a
+month. `/api/sessions` pages with `?limit=` (default 50, max 500) and `?cursor=`,
+searches with `?q=`, and orders with `?sort=` — `recent` (default), `cost`,
+`turns` or `errors`.
+
+Recency is the only order the paged scan produces for free: it walks days
+backwards and stops when the page is full. The others cannot terminate early,
+because the most expensive session in a window may be its oldest, so they read
+the window and rank it. That is a fair price for a question someone asked
+deliberately, and the reason recency stays the default.
+
+`/api/stats` and `/api/projects/{id}` both carry `by_day`, one row per day with
+turns, sessions, errors, cost and the token split. Days holding nothing are
+omitted rather than sent as zeros — the reader fills its own gaps, and a year of
+mostly-idle days is a far smaller payload.
 
 Costs come from first-party Anthropic list prices, including the cache
 multipliers — reads at 0.1x base input, writes at 1.25x (5-minute TTL) or 2x
@@ -374,7 +414,11 @@ time with something that does not mean what the column says.
 ## Status
 
 v1 is complete and single-user by design: log tailing, storage, compaction,
-query API, the embedded UI, and an optional proxy.
+the query API, the embedded UI, and an optional proxy. It answers what agent
+work cost, where the cache is working, how that moves day to day, and which
+project and branch the money went to.
 
 Deliberately out of scope for v1: multi-user or org-wide analytics, and the
-mechanistic-interpretability layer.
+mechanistic-interpretability layer. Per-engineer attribution in particular is
+not a missing feature but a missing field — nothing records who produced a
+session, and that is the first thing any team view would need.

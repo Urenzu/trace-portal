@@ -113,9 +113,29 @@ func (s *Store) PutBlob(payload []byte) (string, error) {
 	return ref, nil
 }
 
+// validRef reports whether a reference is one this store could have written.
+//
+// A length check alone is not enough. The reference is split into a directory
+// and a filename, so a 64-character string containing separators — "../.." and
+// so on — resolves outside the blob store entirely, and the caller is an HTTP
+// handler taking the value straight from a URL. Requiring the exact alphabet of
+// a hex digest leaves no room for that.
+func validRef(ref string) bool {
+	if len(ref) != 64 {
+		return false
+	}
+	for i := 0; i < len(ref); i++ {
+		c := ref[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // GetBlob returns a previously stored payload.
 func (s *Store) GetBlob(ref string) ([]byte, error) {
-	if len(ref) != 64 {
+	if !validRef(ref) {
 		return nil, fmt.Errorf("invalid blob ref %q", ref)
 	}
 	f, err := os.Open(s.blobPath(ref))
