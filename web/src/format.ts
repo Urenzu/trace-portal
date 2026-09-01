@@ -17,12 +17,25 @@ export function pct(fraction: number): string {
   return `${(fraction * 100).toFixed(1)}%`;
 }
 
+/**
+ * A span, in the two largest units that carry information.
+ *
+ * Sessions are resumed under the same id and routinely run for days, so minutes
+ * are not the top of the scale: "4,096m 12s" is a number nobody can read at a
+ * glance. Each step drops the unit that has stopped mattering.
+ */
 export function ms(n: number): string {
   if (n < 1000) return `${Math.round(n)}ms`;
   if (n < 60_000) return `${(n / 1000).toFixed(1)}s`;
-  const minutes = Math.floor(n / 60_000);
-  const seconds = Math.round((n % 60_000) / 1000);
-  return `${minutes}m ${seconds}s`;
+
+  const seconds = Math.floor(n / 1000);
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m ${seconds % 60}s`;
 }
 
 export function duration(fromISO: string, toISO: string): string {

@@ -66,6 +66,32 @@ export function CardHead({
 }
 
 /**
+ * A figure with its label, for the compact row inside a panel.
+ *
+ * The dashboard tiles are the loud version of this; inside a card the same
+ * facts need to sit in one line without competing with the panel below them.
+ * The optional note carries the denominator — "of 29 days" — because a bare
+ * count is the thing that makes a reader go looking for the comparison.
+ */
+export function Stat({
+  label,
+  value,
+  note,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+}) {
+  return (
+    <div className="stat">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value num">{value}</div>
+      {note && <div className="stat-note">{note}</div>}
+    </div>
+  );
+}
+
+/**
  * One horizontal magnitude bar: label, track, value on a shared axis.
  *
  * The default fill is neutral. These bars rank nominal things — tool names,

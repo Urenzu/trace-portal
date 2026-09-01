@@ -122,7 +122,7 @@ export function Projects({
                   title={onOpen ? `Open ${p.project}` : p.project_id}
                 >
                   <td>
-                    <span style={{ fontWeight: 550 }}>{label(p)}</span>
+                    <span className="row-name">{label(p)}</span>
                     {/* Not every directory is a repository. Saying so beats
                         presenting a Downloads folder as a project. */}
                     {!p.in_repo && (

@@ -131,7 +131,14 @@ export function SessionList({
     <div className="card">
       <CardHead
         title={title}
-        meta={searching ? `${shown} matching` : `${shown} loaded`}
+        /* A narrow search walks the window from the newest day back, so how far
+           it actually reached belongs beside the count: the answer to "why is
+           this not here" is usually the window, not the query. */
+        meta={
+          searching
+            ? `${shown} matching · searched ${Math.min(daysScanned, days)} of ${days} days`
+            : `${shown} loaded`
+        }
         action={
           <SearchBox
             value={input}
@@ -141,18 +148,6 @@ export function SessionList({
           />
         }
       />
-      <p className="card-sub">
-        Most recently active first. Select one to see its timeline.
-        {/* A narrow search walks the whole window, so it is worth saying how
-            far back it actually looked: the answer to "why is this not here"
-            is usually the window, not the query. Clamped because the scan
-            counts day boundaries inclusively. */}
-        {searching &&
-          (daysScanned >= days
-            ? ` Searched the whole ${days}-day window.`
-            : ` Searched the newest ${daysScanned} of ${days} days.`)}
-      </p>
-
       {error && <div className="error-banner">{error}</div>}
 
       {sessions.length === 0 && loading && (
@@ -229,7 +224,7 @@ export function SessionList({
                           is a uuid and only useful for looking one up. */}
                       {s.project ? (
                         <>
-                          <span style={{ fontWeight: 550 }}>{s.project}</span>
+                          <span className="row-name">{s.project}</span>
                           {s.git_branch && s.git_branch !== "HEAD" && (
                             <span
                               className="muted mono"
@@ -293,18 +288,13 @@ export function SessionList({
       )}
 
       {/* Scrolling fetches the next page on its own; the button is the keyboard
-          path to the same thing, and the status line when there is no more. */}
-      {sessions.length > 0 && (
+          path to the same thing. Nothing is shown once the list is complete —
+          running out of rows is already visible. */}
+      {sessions.length > 0 && cursor && (
         <div className="list-foot">
-          {cursor ? (
-            <button className="icon-btn" onClick={loadMore} disabled={loading}>
-              {loading ? "Loading…" : "Load more"}
-            </button>
-          ) : (
-            <span className="muted">
-              End of {searching ? "matches" : "history"} for this window.
-            </span>
-          )}
+          <button className="icon-btn" onClick={loadMore} disabled={loading}>
+            {loading ? "Loading…" : "Load more"}
+          </button>
         </div>
       )}
     </div>

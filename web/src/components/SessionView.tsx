@@ -163,14 +163,11 @@ export function SessionView({ id, days, onBack }: Props) {
           title="Turn timeline"
           meta={`${detail.turn_list.length} turns`}
         />
-        <p className="card-sub">
-          Each bar is one turn, positioned by when it started and stacked by how
-          its tokens were billed. Wide gaps between bars are where a five-minute
-          cache window can lapse — the orange that follows is the reload being
-          paid for.
-          {segments.length > 1 &&
-            " Dashed rules mark where the session was resumed on a later day."}
-        </p>
+        {segments.length > 1 && (
+          <p className="card-sub">
+            Dashed rules mark where this session was resumed on a later day.
+          </p>
+        )}
         <div className="card-body" />
         <SessionTimeline
           turns={detail.turn_list}
@@ -183,12 +180,12 @@ export function SessionView({ id, days, onBack }: Props) {
 
       <div className="card">
         <CardHead title="Turns" />
-        <p className="card-sub">
-          Newest first — scrolling down moves backwards in time. Select a row to
-          see context composition and stored payloads.
-          {!timed &&
-            " Per-request latency is absent: transcripts record the conversation, not the request, so nothing observed how long each call took."}
-        </p>
+        {!timed && (
+          <p className="card-sub">
+            Per-request latency is absent: transcripts record the conversation,
+            not the request, so nothing observed how long each call took.
+          </p>
+        )}
         <div className="card-body">
           <TurnTable turns={detail.turn_list} />
         </div>

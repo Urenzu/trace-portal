@@ -76,7 +76,8 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
-    // Coverage is read once: it describes the whole archive, not a window.
+    // Read once: the payload is the whole archive, and the panel narrows it to
+    // whatever window is selected rather than refetching per window.
     api
       .health()
       .then(setHealth)
@@ -166,7 +167,7 @@ export function App() {
 
       {route.kind === "dashboard" && (
         <>
-          {health && <DataCoverage health={health} />}
+          {health && <DataCoverage health={health} days={days} />}
           {stats && <Dashboard stats={stats} onOpenProject={openProject} />}
           <SessionList days={days} onOpen={openSession} />
         </>

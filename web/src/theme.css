@@ -37,6 +37,19 @@
      with the one chart whose colour is meaningful. 5.27:1 on this surface. */
   --bar-neutral: #6b6a66;
 
+  /* A sequential ramp, one hue in four steps, for the activity calendar. It is
+     kept apart from the categorical slots on purpose: those name what a bar is,
+     this one encodes how much, and reusing slot 1 as a value ramp would make
+     "cache read" and "a busy day" the same colour on one page. */
+  --heat-1: #cfe0f5;
+  --heat-2: #94bced;
+  --heat-3: #5192df;
+  --heat-4: #1f61ad;
+
+  /* The one interactive colour: what a row turns when it is the thing you are
+     about to open. Distinct from the categorical slots, which name data. */
+  --accent: #1f61ad;
+
   --grid: #e6e4df;
   --shadow: 0 1px 2px rgb(11 11 11 / 6%), 0 4px 12px rgb(11 11 11 / 4%);
 }
@@ -65,6 +78,14 @@
 
     --bar-neutral: #757575; /* 4.22:1 on black */
 
+    /* Ramp re-stepped for the dark surface: dark to light, not the light ramp
+       flipped. */
+    --heat-1: #10314f;
+    --heat-2: #1a5288;
+    --heat-3: #2f7ac4;
+    --heat-4: #6fb0ee;
+    --accent: #6fb0ee;
+
     --grid: #1f1f1f;
     --shadow: 0 1px 2px rgb(0 0 0 / 60%), 0 4px 12px rgb(0 0 0 / 45%);
   }
@@ -92,6 +113,14 @@
   --status-good: #4ca64c;
 
   --bar-neutral: #757575; /* 4.22:1 on black */
+
+  /* Ramp re-stepped for the dark surface: dark to light, not the light ramp
+     flipped. */
+  --heat-1: #10314f;
+  --heat-2: #1a5288;
+  --heat-3: #2f7ac4;
+  --heat-4: #6fb0ee;
+  --accent: #6fb0ee;
 
   --grid: #1f1f1f;
   --shadow: 0 1px 2px rgb(0 0 0 / 60%), 0 4px 12px rgb(0 0 0 / 45%);
@@ -420,6 +449,43 @@ td.right {
 
 tr.clickable {
   cursor: pointer;
+  transition: background 110ms ease;
+}
+
+/* The row name is the affordance: it is what a reader aims at, so it is what
+   has to respond. Colour and a hairline underline rather than a weight change,
+   because reflowing the text on hover shifts every pill beside it. */
+.row-name {
+  font-weight: 550;
+  color: var(--text-primary);
+  text-decoration: 1px solid underline transparent;
+  text-underline-offset: 3px;
+  transition:
+    color 110ms ease,
+    text-decoration-color 110ms ease;
+}
+
+tr.clickable:hover {
+  background: var(--surface-2);
+}
+
+tr.clickable:hover .row-name {
+  color: var(--accent);
+  text-decoration-color: var(--accent);
+}
+
+tr.clickable:hover td,
+tr.clickable:hover td.muted {
+  color: var(--text-secondary);
+}
+
+tr.clickable:active {
+  background: var(--surface-0);
+}
+
+tr.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* A session is resumed under the same id, so the turn table can cross a
@@ -852,6 +918,177 @@ pre.payload {
 .search-clear:hover {
   color: var(--text-primary);
   background: var(--surface-0);
+}
+
+/* --- panel stats --------------------------------------------------------- */
+
+/* The loud version of these is the dashboard tile row. Inside a card the same
+   facts have to sit on one line without competing with what they describe, so
+   they wrap on a fixed rhythm instead of stretching to fill. */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 34px;
+  margin-top: 14px;
+}
+
+.stat-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.stat-value {
+  margin-top: 2px;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.stat-note {
+  margin-top: 1px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- day strip ----------------------------------------------------------- */
+
+/* Short windows read left to right with their dates on them: a week laid out as
+   a seven-row calendar is one sparse column and six empty ones. */
+.activity-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.strip-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.strip-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 10px;
+  line-height: 1.25;
+  color: var(--text-muted);
+}
+
+.strip-label em {
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* --- activity calendar --------------------------------------------------- */
+
+/* Weeks run down the columns, so the block keeps its height whether it covers
+   a fortnight or a year and only ever grows sideways — where it can scroll. */
+
+.activity {
+  margin-top: 16px;
+}
+
+.activity-scroll {
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+/* A fixed gutter carries the weekday labels; the month row is inset by the same
+   amount so its labels sit over the columns they name. */
+.activity-months,
+.activity-cells {
+  display: grid;
+  gap: 3px;
+  width: max-content;
+}
+
+.activity-months {
+  margin-left: 32px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.activity-body {
+  display: flex;
+  gap: 6px;
+}
+
+.activity-weekdays {
+  display: grid;
+  grid-template-rows: repeat(7, var(--cell));
+  gap: 3px;
+  width: 26px;
+  font-size: 9.5px;
+  line-height: var(--cell);
+  color: var(--text-muted);
+}
+
+.activity-cells {
+  grid-template-rows: repeat(7, var(--cell));
+  grid-auto-flow: column;
+}
+
+.cell {
+  width: var(--cell, 13px);
+  height: var(--cell, 13px);
+  border-radius: 3px;
+  background: var(--grid);
+}
+
+/* Padding to the week boundary is a hole, not an empty day: an unrecorded day
+   and a day outside the archive are different claims. */
+.cell.out {
+  background: none;
+}
+
+.cell.l0 {
+  background: var(--grid);
+}
+.cell.l1 {
+  background: var(--heat-1);
+}
+.cell.l2 {
+  background: var(--heat-2);
+}
+.cell.l3 {
+  background: var(--heat-3);
+}
+.cell.l4 {
+  background: var(--heat-4);
+}
+
+.activity-key {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 9px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-key .cell {
+  width: 10px;
+  height: 10px;
+}
+
+.activity-key span:first-child {
+  margin-right: 3px;
+}
+
+.activity-key span:last-child {
+  margin-left: 3px;
 }
 
 /* --- data coverage detail ----------------------------------------------- */

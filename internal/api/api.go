@@ -74,6 +74,16 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if len(days) > 0 {
 		resp["first_day"] = days[0].Format("2006-01-02")
 		resp["last_day"] = days[len(days)-1].Format("2006-01-02")
+
+		// Per-day volume, not just the span. A first and last date read as
+		// continuous coverage; they are not, and the days with nothing in them
+		// are the shape of how the agent was actually used.
+		activity, err := s.compact.Activity(days)
+		if err != nil {
+			s.fail(w, http.StatusInternalServerError, err)
+			return
+		}
+		resp["days"] = activity
 	}
 	if s.coverage != nil {
 		resp["coverage"] = s.coverage.Coverage()

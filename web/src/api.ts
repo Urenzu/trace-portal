@@ -110,11 +110,20 @@ export interface Coverage {
   unknown_field?: Record<string, number>;
 }
 
+/** One day's volume. The dashboard totals a window; this says which days in it
+ *  actually held anything, which is the only way a gap in the history shows. */
+export interface DayActivity {
+  day: string;
+  turns: number;
+  cost_usd: number;
+}
+
 export interface Health {
   status: string;
   days_captured: number;
   first_day?: string;
   last_day?: string;
+  days?: DayActivity[];
   coverage?: Record<string, Coverage>;
 }
 

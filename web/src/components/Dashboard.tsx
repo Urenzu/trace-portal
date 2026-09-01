@@ -93,10 +93,6 @@ export function Dashboard({
           title="Where the tokens went"
           meta={`${tokens(totalInput)} input`}
         />
-        <p className="card-sub">
-          Cached reads bill at a tenth of the input rate, so a high share here
-          is the difference between a cheap agent loop and an expensive one.
-        </p>
         <div className="card-body">
           <BarRow
             label="Cache read"

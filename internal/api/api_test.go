@@ -213,12 +213,29 @@ func TestHealthEndpoint(t *testing.T) {
 	var health struct {
 		Status       string `json:"status"`
 		DaysCaptured int    `json:"days_captured"`
+		Days         []struct {
+			Day     string  `json:"day"`
+			Turns   int     `json:"turns"`
+			CostUSD float64 `json:"cost_usd"`
+		} `json:"days"`
 	}
 	if code := get(t, h, "/api/health", &health); code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
 	if health.Status != "ok" || health.DaysCaptured != 1 {
 		t.Errorf("health = %+v", health)
+	}
+
+	// The per-day breakdown is what lets the UI show which days hold anything
+	// rather than presenting a first and last date as continuous coverage.
+	if len(health.Days) != 1 {
+		t.Fatalf("days = %+v, want one entry", health.Days)
+	}
+	if got, want := health.Days[0].Day, now.Format("2006-01-02"); got != want {
+		t.Errorf("day = %q, want %q", got, want)
+	}
+	if health.Days[0].Turns == 0 {
+		t.Errorf("day turns = 0, want the sample events counted")
 	}
 }
 
