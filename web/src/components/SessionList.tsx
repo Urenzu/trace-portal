@@ -18,6 +18,19 @@ const PREFETCH_PX = 240;
 /** Typing pause before a search is sent. */
 const DEBOUNCE_MS = 220;
 
+/**
+ * Recency is first because it is the default and the cheap one — the listing
+ * walks days backwards and stops when the page is full. The others have to read
+ * the whole window before they know what comes first, which is a fair price for
+ * "what did I spend the most on", but not one to pay by accident.
+ */
+const ORDERS = [
+  { key: "recent", label: "Most recent" },
+  { key: "cost", label: "Most expensive" },
+  { key: "turns", label: "Most turns" },
+  { key: "errors", label: "Most errors" },
+] as const;
+
 const SEARCH_HINT = [
   "Search project, branch, model, tool, or session id.",
   "",
@@ -40,6 +53,12 @@ interface Props {
    */
   scope?: string;
   title?: string;
+  /**
+   * A query pushed in from outside — the errors tile aiming the list at
+   * `has:errors`. It seeds the box rather than replacing it, so the reader can
+   * see what was searched and edit or clear it like anything they typed.
+   */
+  seed?: { query: string; nonce: number };
 }
 
 export function SessionList({
@@ -47,6 +66,7 @@ export function SessionList({
   onOpen,
   scope,
   title = "Sessions",
+  seed,
 }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [cursor, setCursor] = useState<string | undefined>();
@@ -59,6 +79,7 @@ export function SessionList({
   // behind it so a request is not fired per character.
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
+  const [order, setOrder] = useState<string>("recent");
 
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -66,6 +87,16 @@ export function SessionList({
     const timer = setTimeout(() => setQuery(input.trim()), DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [input]);
+
+  // Keyed on the nonce, not the text: clicking the same tile twice has to
+  // re-aim a list the reader has since edited, and comparing the query alone
+  // would make the second click do nothing.
+  const seedQuery = seed?.query;
+  const seedNonce = seed?.nonce;
+  useEffect(() => {
+    if (seedNonce !== undefined && seedQuery !== undefined) setInput(seedQuery);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedNonce]);
 
   const sent = [scope, query].filter(Boolean).join(" ");
 
@@ -77,7 +108,7 @@ export function SessionList({
     setError(null);
 
     api
-      .sessions(days, 50, undefined, sent)
+      .sessions(days, 50, undefined, sent, order)
       .then((page) => {
         if (cancelled) return;
         setSessions(page.sessions);
@@ -97,13 +128,13 @@ export function SessionList({
     return () => {
       cancelled = true;
     };
-  }, [days, sent]);
+  }, [days, sent, order]);
 
   const loadMore = useCallback(async () => {
     if (!cursor || loading) return;
     setLoading(true);
     try {
-      const page = await api.sessions(days, 50, cursor, sent);
+      const page = await api.sessions(days, 50, cursor, sent, order);
       setSessions((prev) => [...prev, ...page.sessions]);
       setCursor(page.next_cursor);
       setDaysScanned((prev) => prev + page.days_scanned);
@@ -112,7 +143,7 @@ export function SessionList({
     } finally {
       setLoading(false);
     }
-  }, [cursor, days, loading, sent]);
+  }, [cursor, days, loading, order, sent]);
 
   // Paging on scroll rather than on a click. Opening the full history should
   // not drop hundreds of rows onto the page at once, and it should not make
@@ -128,7 +159,7 @@ export function SessionList({
   const shown = `${sessions.length}${cursor ? "+" : ""}`;
 
   return (
-    <div className="card">
+    <div className="card" id="session-list">
       <CardHead
         title={title}
         /* A narrow search walks the window from the newest day back, so how far
@@ -140,12 +171,26 @@ export function SessionList({
             : `${shown} loaded`
         }
         action={
-          <SearchBox
-            value={input}
-            onChange={setInput}
-            placeholder="Search sessions…"
-            hint={SEARCH_HINT}
-          />
+          <>
+            <SearchBox
+              value={input}
+              onChange={setInput}
+              placeholder="Search sessions…"
+              hint={SEARCH_HINT}
+            />
+            <select
+              className="select"
+              value={order}
+              onChange={(e) => setOrder(e.target.value)}
+              aria-label="Sort sessions"
+            >
+              {ORDERS.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </>
         }
       />
       {error && <div className="error-banner">{error}</div>}

@@ -35,21 +35,25 @@ func encodeCursor(s query.Session) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
+// errBadCursor is shared: a cursor from one order handed to another is a
+// client bug, and both paths report it the same way.
+var errBadCursor = fmt.Errorf("invalid cursor")
+
 func decodeCursor(encoded string) (cursor, error) {
 	if encoded == "" {
 		return cursor{}, nil
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
-		return cursor{}, fmt.Errorf("invalid cursor")
+		return cursor{}, errBadCursor
 	}
 	parts := strings.SplitN(string(raw), "|", 2)
 	if len(parts) != 2 {
-		return cursor{}, fmt.Errorf("invalid cursor")
+		return cursor{}, errBadCursor
 	}
 	ms, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
-		return cursor{}, fmt.Errorf("invalid cursor")
+		return cursor{}, errBadCursor
 	}
 	return cursor{endedAt: time.UnixMilli(ms).UTC(), id: parts[1]}, nil
 }

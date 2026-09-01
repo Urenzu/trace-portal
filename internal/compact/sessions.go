@@ -41,6 +41,20 @@ type SessionRow struct {
 // SessionsRange lists sessions in a window, reading only the columns a session
 // summary needs from compacted days and falling back to the raw log otherwise.
 func (c *Compactor) SessionsRange(from, to time.Time) ([]query.Session, error) {
+	turns, err := c.SessionTurnsRange(from, to)
+	if err != nil {
+		return nil, err
+	}
+	return query.SessionsFromTurns(turns), nil
+}
+
+// SessionTurnsRange returns a window's turns in the narrow projection, oldest
+// first.
+//
+// Exported because a caller that wants both sessions and something the rollup
+// into a session discards — a tool histogram, a model split — would otherwise
+// have to walk the same partitions twice. Rolling up is cheap; reading is not.
+func (c *Compactor) SessionTurnsRange(from, to time.Time) ([]query.Turn, error) {
 	from, to = from.UTC(), to.UTC()
 	if to.Before(from) {
 		from, to = to, from
@@ -63,7 +77,7 @@ func (c *Compactor) SessionsRange(from, to time.Time) ([]query.Session, error) {
 		filtered = append(filtered, t)
 	}
 	sort.SliceStable(filtered, func(i, j int) bool { return filtered[i].StartedAt.Before(filtered[j].StartedAt) })
-	return query.SessionsFromTurns(filtered), nil
+	return filtered, nil
 }
 
 func (c *Compactor) sessionTurnsForDay(day time.Time) ([]query.Turn, error) {

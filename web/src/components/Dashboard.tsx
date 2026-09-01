@@ -3,34 +3,60 @@ import { useState } from "react";
 import type { Stats } from "../api";
 import { tokens, usd, pct } from "../format";
 import { Projects } from "./Projects";
+import { TrendChart } from "./TrendChart";
 import { BarRow, CardHead, Disclosure } from "./ui";
 
-/** A stat tile: one number, no plot. A single headline value does not need a
- *  chart to be understood. */
+/**
+ * A stat tile: one number, no plot. A single headline value does not need a
+ * chart to be understood.
+ *
+ * A tile with an onClick is a way in rather than a readout — an error count you
+ * cannot act on is a dead end, and "which sessions failed" is one query away.
+ */
 function Tile({
   label,
   value,
   note,
+  onClick,
+  hint,
 }: {
   label: string;
   value: string;
   note?: string;
+  onClick?: () => void;
+  hint?: string;
 }) {
+  if (!onClick) {
+    return (
+      <div className="tile">
+        <div className="tile-label">{label}</div>
+        <div className="tile-value num">{value}</div>
+        {note && <div className="tile-note">{note}</div>}
+      </div>
+    );
+  }
   return (
-    <div className="tile">
+    <button type="button" className="tile actionable" onClick={onClick} title={hint}>
       <div className="tile-label">{label}</div>
       <div className="tile-value num">{value}</div>
       {note && <div className="tile-note">{note}</div>}
-    </div>
+    </button>
   );
 }
 
 export function Dashboard({
   stats,
   onOpenProject,
+  onFilterSessions,
+  windowFrom,
+  windowTo,
 }: {
   stats: Stats;
   onOpenProject?: (projectId: string) => void;
+  /** Hands a session-list query to the page below, so a tile can be a way in. */
+  onFilterSessions?: (query: string) => void;
+  windowFrom: string;
+  windowTo: string;
 }) {
   const u = stats.usage;
   const totalInput =
@@ -85,8 +111,30 @@ export function Dashboard({
           label="Errors"
           value={stats.errors.toLocaleString()}
           note={stats.errors > 0 ? "failed or 4xx/5xx turns" : "none"}
+          onClick={
+            stats.errors > 0 && onFilterSessions
+              ? () => onFilterSessions("has:errors")
+              : undefined
+          }
+          hint="Show only sessions with a failed turn"
         />
       </div>
+
+      {stats.by_day && stats.by_day.length > 0 && (
+        <div className="card">
+          <CardHead
+            title="Spend over time"
+            meta={`${usd(stats.cost_usd)} across ${stats.by_day.length} active ${stats.by_day.length === 1 ? "day" : "days"}`}
+          />
+          <div className="card-body">
+            <TrendChart
+              points={stats.by_day}
+              from={windowFrom}
+              to={windowTo}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <CardHead

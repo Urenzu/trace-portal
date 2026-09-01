@@ -34,20 +34,56 @@ type Route =
   | { kind: "session"; id: string }
   | { kind: "project"; id: string };
 
-function readHash(): Route {
-  const hash = window.location.hash.replace(/^#\/?/, "");
+const DEFAULT_DAYS = 7;
+
+/**
+ * The window travels with the route.
+ *
+ * A link to a session that silently reverts to the default window is a link to
+ * a different page: the session it names may not be inside seven days, and the
+ * reader who sent it was looking at thirty. Carrying it in the hash makes every
+ * view reproducible from its URL, and makes the back button undo a window
+ * change the same way it undoes a drill-in.
+ */
+function readHash(): { route: Route; days: number } {
+  const raw = window.location.hash.replace(/^#\/?/, "");
+  const [path, search] = raw.split("?");
+  const days = Number(new URLSearchParams(search ?? "").get("d"));
+
+  let route: Route = { kind: "dashboard" };
   for (const kind of ["session", "project"] as const) {
     const prefix = `${kind}/`;
-    if (hash.startsWith(prefix)) {
-      return { kind, id: decodeURIComponent(hash.slice(prefix.length)) };
+    if (path.startsWith(prefix)) {
+      route = { kind, id: decodeURIComponent(path.slice(prefix.length)) };
+      break;
     }
   }
-  return { kind: "dashboard" };
+  return {
+    route,
+    days: WINDOWS.some((w) => w.days === days) ? days : DEFAULT_DAYS,
+  };
+}
+
+function writeHash(route: Route, days: number) {
+  const path =
+    route.kind === "dashboard"
+      ? ""
+      : `${route.kind}/${encodeURIComponent(route.id)}`;
+  const suffix = days === DEFAULT_DAYS ? "" : `?d=${days}`;
+  window.location.hash = path || suffix ? `#/${path}${suffix}` : "";
+}
+
+/** YYYY-MM-DD, UTC, for the window's ends. The day rollups are keyed this way,
+ *  so the charts and the calendar agree on where a day starts. */
+function dayKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
 export function App() {
-  const [days, setDays] = useState(7);
-  const [route, setRoute] = useState<Route>(readHash);
+  const initial = readHash();
+  const [days, setDays] = useState(initial.days);
+  const [route, setRoute] = useState<Route>(initial.route);
+  const [seed, setSeed] = useState<{ query: string; nonce: number }>();
   const [stats, setStats] = useState<Stats | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [statsError, setStatsError] = useState<string | null>(null);
@@ -56,7 +92,11 @@ export function App() {
   );
 
   useEffect(() => {
-    const onHash = () => setRoute(readHash());
+    const onHash = () => {
+      const next = readHash();
+      setRoute(next.route);
+      setDays(next.days);
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -101,19 +141,35 @@ export function App() {
   }, [days]);
 
   function go(next: Route) {
-    window.location.hash =
-      next.kind === "dashboard"
-        ? ""
-        : `#/${next.kind}/${encodeURIComponent(next.id)}`;
+    writeHash(next, days);
     setRoute(next);
     // A drill-in is a new page, so it starts at the top rather than wherever
     // the reader happened to be scrolled in the one before it.
     window.scrollTo({ top: 0 });
   }
 
+  function setWindow(next: number) {
+    setDays(next);
+    writeHash(route, next);
+  }
+
   const openSession = (id: string) => go({ kind: "session", id });
   const openProject = (id: string) => go({ kind: "project", id });
   const goHome = () => go({ kind: "dashboard" });
+
+  // A tile that filters the list has to bring the list into view, or it reads
+  // as having done nothing at all.
+  function filterSessions(query: string) {
+    setSeed({ query, nonce: Date.now() });
+    requestAnimationFrame(() =>
+      document
+        .getElementById("session-list")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
+  }
+
+  const windowTo = dayKey(new Date());
+  const windowFrom = dayKey(new Date(Date.now() - (days - 1) * 86_400_000));
 
   return (
     <div className="app">
@@ -125,7 +181,7 @@ export function App() {
               <button
                 key={w.days}
                 aria-pressed={days === w.days}
-                onClick={() => setDays(w.days)}
+                onClick={() => setWindow(w.days)}
               >
                 {w.label}
               </button>
@@ -159,7 +215,8 @@ export function App() {
         <ProjectView
           projectId={route.id}
           days={days}
-          project={stats?.projects?.find((p) => p.project_id === route.id)}
+          windowFrom={windowFrom}
+          windowTo={windowTo}
           onBack={goHome}
           onOpenSession={openSession}
         />
@@ -168,8 +225,16 @@ export function App() {
       {route.kind === "dashboard" && (
         <>
           {health && <DataCoverage health={health} days={days} />}
-          {stats && <Dashboard stats={stats} onOpenProject={openProject} />}
-          <SessionList days={days} onOpen={openSession} />
+          {stats && (
+            <Dashboard
+              stats={stats}
+              onOpenProject={openProject}
+              onFilterSessions={filterSessions}
+              windowFrom={windowFrom}
+              windowTo={windowTo}
+            />
+          )}
+          <SessionList days={days} onOpen={openSession} seed={seed} />
         </>
       )}
     </div>

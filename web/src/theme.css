@@ -49,6 +49,7 @@
   /* The one interactive colour: what a row turns when it is the thing you are
      about to open. Distinct from the categorical slots, which name data. */
   --accent: #1f61ad;
+  --accent-strong: #14497f;
 
   --grid: #e6e4df;
   --shadow: 0 1px 2px rgb(11 11 11 / 6%), 0 4px 12px rgb(11 11 11 / 4%);
@@ -85,6 +86,7 @@
     --heat-3: #2f7ac4;
     --heat-4: #6fb0ee;
     --accent: #6fb0ee;
+    --accent-strong: #9dcbf5;
 
     --grid: #1f1f1f;
     --shadow: 0 1px 2px rgb(0 0 0 / 60%), 0 4px 12px rgb(0 0 0 / 45%);
@@ -121,6 +123,7 @@
   --heat-3: #2f7ac4;
   --heat-4: #6fb0ee;
   --accent: #6fb0ee;
+  --accent-strong: #9dcbf5;
 
   --grid: #1f1f1f;
   --shadow: 0 1px 2px rgb(0 0 0 / 60%), 0 4px 12px rgb(0 0 0 / 45%);
@@ -618,6 +621,17 @@ pre.payload {
   stroke-width: 1;
 }
 
+/* One series, so colour carries no identity here — it is the same single hue
+   that means volume in the activity calendar, and height does the encoding. */
+.trend-bar {
+  fill: var(--heat-4);
+  transition: fill 110ms ease;
+}
+
+.trend-bar.on {
+  fill: var(--accent-strong);
+}
+
 /* Where a session picked up again on a later day. Dashed and neutral: it marks
    a boundary in time, not a measured value, so it must not read as a series. */
 .day-break line {
@@ -918,6 +932,68 @@ pre.payload {
 .search-clear:hover {
   color: var(--text-primary);
   background: var(--surface-0);
+}
+
+/* A native select, dressed to match the icon buttons beside it. Native because
+   the options are four fixed strings: a custom menu would add a popover, focus
+   management and keyboard handling to reimplement what the platform ships. */
+.select {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  padding: 5px 26px 5px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) calc(50% + 1px),
+    calc(100% - 10px) calc(50% + 1px);
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+
+.select:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+/* The header strip on a drill-in page: back, name, badges, id. */
+.page-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+/* A tile that is a way in rather than a readout. It keeps the tile's shape —
+   the row must stay one rhythm — and earns a pointer and a lift instead. */
+.tile.actionable {
+  appearance: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 110ms ease,
+    background 110ms ease;
+}
+
+.tile.actionable:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+.tile.actionable:hover .tile-value {
+  color: var(--accent);
+}
+
+.tile.actionable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* --- panel stats --------------------------------------------------------- */

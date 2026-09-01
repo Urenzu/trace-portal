@@ -96,6 +96,46 @@ export interface Stats {
   tool_calls_by_name?: Record<string, number>;
   unpriced_turns?: number;
   sessions_exact: boolean;
+  by_day?: DayPoint[];
+}
+
+/** A name with a count, already ranked by the server. */
+export interface Named {
+  name: string;
+  count: number;
+}
+
+export interface BranchStat {
+  branch: string;
+  sessions: number;
+  turns: number;
+  cost_usd: number;
+  cache_hit_rate: number;
+  errors?: number;
+  last_active?: string;
+}
+
+/** One project's page: what it cost, how that moved, and what it went on. */
+export interface ProjectDetail {
+  project: string;
+  project_id: string;
+  in_repo: boolean;
+  found: boolean;
+  from: string;
+  to: string;
+  turns: number;
+  sessions: number;
+  errors: number;
+  cost_usd: number;
+  usage: Usage;
+  cache_hit_rate: number;
+  by_day?: DayPoint[];
+  by_branch?: BranchStat[];
+  by_model?: Named[];
+  tools?: Named[];
+  median_session_cost: number;
+  costliest_session?: Session;
+  longest_session?: Session;
 }
 
 /** What ingestion understood, per source. Agent log formats change weekly, so
@@ -110,12 +150,24 @@ export interface Coverage {
   unknown_field?: Record<string, number>;
 }
 
-/** One day's volume. The dashboard totals a window; this says which days in it
- *  actually held anything, which is the only way a gap in the history shows. */
-export interface DayActivity {
+/**
+ * One day of a series.
+ *
+ * A total says what something cost; only a series says whether that is rising,
+ * or that the window has holes in it. Days holding nothing are omitted rather
+ * than sent as zeros — the reader fills its own gaps, and a year of mostly-idle
+ * days is a far smaller payload.
+ */
+export interface DayPoint {
   day: string;
   turns: number;
+  sessions: number;
+  errors: number;
   cost_usd: number;
+  cache_read: number;
+  input: number;
+  output: number;
+  write: number;
 }
 
 export interface Health {
@@ -123,7 +175,7 @@ export interface Health {
   days_captured: number;
   first_day?: string;
   last_day?: string;
-  days?: DayActivity[];
+  days?: DayPoint[];
   coverage?: Record<string, Coverage>;
 }
 
@@ -167,11 +219,19 @@ export const api = {
 
   stats: (days: number) => get<Stats>("/api/stats", { days }),
 
-  sessions: (days: number, limit: number, cursor?: string, q?: string) =>
-    get<SessionPage>("/api/sessions", { days, limit, cursor, q }),
+  sessions: (
+    days: number,
+    limit: number,
+    cursor?: string,
+    q?: string,
+    sort?: string,
+  ) => get<SessionPage>("/api/sessions", { days, limit, cursor, q, sort }),
 
   session: (id: string, days: number) =>
     get<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`, { days }),
+
+  project: (id: string, days: number) =>
+    get<ProjectDetail>(`/api/projects/${encodeURIComponent(id)}`, { days }),
 
   // Payloads are fetched only when a turn is expanded, which is the whole
   // point of keeping them out of the event records.

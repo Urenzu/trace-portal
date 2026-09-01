@@ -1,6 +1,6 @@
 import { useState, type CSSProperties, type MouseEvent } from "react";
 
-import type { DayActivity } from "../api";
+import type { DayPoint } from "../api";
 import { usd } from "../format";
 import { Tooltip } from "./Tooltip";
 
@@ -57,7 +57,7 @@ interface Hover {
   x: number;
   y: number;
   date: Date;
-  day?: DayActivity;
+  day?: DayPoint;
 }
 
 export function ActivityGrid({
@@ -66,7 +66,7 @@ export function ActivityGrid({
   to,
   since,
 }: {
-  days: DayActivity[];
+  days: DayPoint[];
   /** First and last day of the span to draw, as YYYY-MM-DD. The span comes from
    *  the selected window rather than from the data, so a week whose last three
    *  days are empty still draws as a week, and a year draws as a year. */
@@ -103,7 +103,7 @@ export function ActivityGrid({
   // Enter opens the tooltip; move keeps it under the pointer and re-reads the
   // day, so a fast drag across a row cannot leave the wrong date on screen.
   const shower =
-    (date: Date, day?: DayActivity) => (e: MouseEvent<HTMLElement>) =>
+    (date: Date, day?: DayPoint) => (e: MouseEvent<HTMLElement>) =>
       setHover({ x: e.clientX, y: e.clientY, date, day });
 
   const tooltip = hover && (

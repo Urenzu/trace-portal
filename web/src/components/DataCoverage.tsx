@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import type { Coverage, DayActivity, Health } from "../api";
+import type { Coverage, DayPoint, Health } from "../api";
 import { usd } from "../format";
 import { ActivityGrid } from "./ActivityGrid";
 import { CardHead, Disclosure, Stat } from "./ui";
@@ -37,21 +37,14 @@ function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function shortDate(key: string, withYear = false): string {
+function shortDate(key: string): string {
   return parseDay(key).toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
-    year: withYear ? "numeric" : undefined,
     timeZone: "UTC",
   });
 }
 
-/** A range, carrying years only when it crosses one — "Sep 2 – Sep 1" is a
- *  year-long window that reads like a typo. */
-function dateRange(from: string, to: string): string {
-  const crossesYear = from.slice(0, 4) !== to.slice(0, 4);
-  return `${shortDate(from, crossesYear)} – ${shortDate(to, crossesYear)}`;
-}
 
 /** Whole calendar days between two day keys, inclusive of both ends. */
 function spanOf(from: string, to: string): number {
@@ -100,10 +93,10 @@ export function DataCoverage({
   const from = windowStart;
   const to = today < earliest ? earliest : today;
 
-  const shown: DayActivity[] = all.filter((d) => d.day >= from && d.day <= to);
+  const shown: DayPoint[] = all.filter((d) => d.day >= from && d.day <= to);
   const turns = shown.reduce((sum, d) => sum + d.turns, 0);
   const cost = shown.reduce((sum, d) => sum + d.cost_usd, 0);
-  const busiest = shown.reduce<DayActivity | null>(
+  const busiest = shown.reduce<DayPoint | null>(
     (best, d) => (best === null || d.turns > best.turns ? d : best),
     null,
   );
@@ -139,8 +132,10 @@ export function DataCoverage({
   return (
     <div className="card" style={{ marginBottom: 14 }}>
       <CardHead
-        title="What's captured"
-        meta={`${dateRange(from, to)}${clamped ? ` · captured from ${shortDate(earliest)}` : ""}`}
+        title="Activity"
+        /* No date range beside the title: the calendar carries its own month
+           labels and the stats carry the counts, so a restated span is one more
+           thing to read that the picture already says. */
         action={
           hasDetail ? (
             <Disclosure

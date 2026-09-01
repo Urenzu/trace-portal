@@ -60,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleSession)
 	mux.HandleFunc("GET /api/stats", s.handleStats)
+	mux.HandleFunc("GET /api/projects/{id}", s.handleProject)
 	mux.HandleFunc("GET /api/blobs/{ref}", s.handleBlob)
 	return mux
 }
@@ -78,12 +79,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		// Per-day volume, not just the span. A first and last date read as
 		// continuous coverage; they are not, and the days with nothing in them
 		// are the shape of how the agent was actually used.
-		activity, err := s.compact.Activity(days)
+		series, err := s.compact.DailyRange(days[0], days[len(days)-1])
 		if err != nil {
 			s.fail(w, http.StatusInternalServerError, err)
 			return
 		}
-		resp["days"] = activity
+		resp["days"] = series
 	}
 	if s.coverage != nil {
 		resp["coverage"] = s.coverage.Coverage()
@@ -106,7 +107,19 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	// narrows what qualifies, so it runs here rather than in the browser: the
 	// alternative would only ever search the page already loaded.
 	filter := compact.ParseFilter(r.URL.Query().Get("q"))
-	page, err := s.compact.SessionsPage(from, to, limit, r.URL.Query().Get("cursor"), filter)
+	cursor := r.URL.Query().Get("cursor")
+	order := compact.ParseOrder(r.URL.Query().Get("sort"))
+
+	// Recency is the only order the backwards walk already produces. Any other
+	// has to see the whole window before it knows what comes first, so it takes
+	// the ranked path — deliberately, and only when asked for.
+	var page compact.SessionPage
+	var err error
+	if order.Lazy() {
+		page, err = s.compact.SessionsPage(from, to, limit, cursor, filter)
+	} else {
+		page, err = s.compact.SessionsRanked(from, to, limit, cursor, filter, order)
+	}
 	if err != nil {
 		s.fail(w, http.StatusBadRequest, err)
 		return
@@ -162,6 +175,10 @@ type Stats struct {
 	ToolCalls   map[string]int `json:"tool_calls_by_name,omitempty"`
 	UnpricedRun int            `json:"unpriced_turns,omitempty"`
 
+	// ByDay is the window as a series. Totals say what something cost; only a
+	// series says whether that is rising, and the day rollups already hold it.
+	ByDay []compact.DayPoint `json:"by_day,omitempty"`
+
 	// SessionsExact is false when part of the window was answered from day
 	// rollups, which count a session once per day it touched. Totals stay
 	// exact; the session count becomes an upper bound.
@@ -175,7 +192,12 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, statsFromAggregate(agg, from, to))
+	stats := statsFromAggregate(agg, from, to)
+	if stats.ByDay, err = s.compact.DailyRange(from, to); err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
