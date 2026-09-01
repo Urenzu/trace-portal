@@ -60,9 +60,13 @@ func setIfEmpty(dst *string, v string) {
 
 // Session is the rolled-up view of one conversation.
 type Session struct {
-	ID        string    `json:"id"`
-	Model     string    `json:"model"`
-	Project   string    `json:"project,omitempty"`
+	ID      string `json:"id"`
+	Model   string `json:"model"`
+	Project string `json:"project,omitempty"`
+	// ProjectID is the stable digest of the working directory. Two projects can
+	// share a display name, so drilling into one has to key on this rather than
+	// on what is written on screen.
+	ProjectID string    `json:"project_id,omitempty"`
 	GitBranch string    `json:"git_branch,omitempty"`
 	Models    []string  `json:"models,omitempty"`
 	StartedAt time.Time `json:"started_at"`
@@ -292,6 +296,7 @@ func summarize(id string, turns []Turn) Session {
 		// names one settles it.
 		if s.Project == "" {
 			s.Project = t.Project
+			s.ProjectID = t.ProjectID
 		}
 		if s.GitBranch == "" {
 			s.GitBranch = t.GitBranch

@@ -70,6 +70,10 @@ export function SessionView({ id, days, onBack }: Props) {
   // A resumed session's wall-clock span counts the nights it was not running,
   // so the day breakdown is what makes that duration mean anything.
   const segments = daySegments(detail.turn_list);
+  // Said once, above the table, rather than as a column of em-dashes in it.
+  const timed = detail.turn_list.some(
+    (t) => t.ttfb_ms > 0 || t.duration_ms > 0,
+  );
   const u = detail.usage;
   const totalInput =
     u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens;
@@ -182,6 +186,8 @@ export function SessionView({ id, days, onBack }: Props) {
         <p className="card-sub">
           Newest first — scrolling down moves backwards in time. Select a row to
           see context composition and stored payloads.
+          {!timed &&
+            " Per-request latency is absent: transcripts record the conversation, not the request, so nothing observed how long each call took."}
         </p>
         <div className="card-body">
           <TurnTable turns={detail.turn_list} />

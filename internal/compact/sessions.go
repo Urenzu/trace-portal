@@ -21,6 +21,7 @@ type SessionRow struct {
 	SessionID  string `parquet:"session_id,dict"`
 	Model      string `parquet:"model,dict"`
 	Project    string `parquet:"project,dict"`
+	ProjectID  string `parquet:"project_id,dict"`
 	GitBranch  string `parquet:"git_branch,dict"`
 	StatusCode int32  `parquet:"status_code"`
 	DurationMS int64  `parquet:"duration_ms,delta"`
@@ -91,6 +92,7 @@ func sessionTurn(r SessionRow) query.Turn {
 		StartedAt:  time.UnixMilli(r.TS).UTC(),
 		Model:      r.Model,
 		Project:    r.Project,
+		ProjectID:  r.ProjectID,
 		GitBranch:  r.GitBranch,
 		StatusCode: int(r.StatusCode),
 		DurationMS: r.DurationMS,

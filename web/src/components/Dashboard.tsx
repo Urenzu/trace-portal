@@ -25,7 +25,13 @@ function Tile({
   );
 }
 
-export function Dashboard({ stats }: { stats: Stats }) {
+export function Dashboard({
+  stats,
+  onOpenProject,
+}: {
+  stats: Stats;
+  onOpenProject?: (projectId: string) => void;
+}) {
   const u = stats.usage;
   const totalInput =
     u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens;
@@ -124,7 +130,7 @@ export function Dashboard({ stats }: { stats: Stats }) {
       </div>
 
       {stats.projects && stats.projects.length > 0 && (
-        <Projects projects={stats.projects} />
+        <Projects projects={stats.projects} onOpen={onOpenProject} />
       )}
 
       {models.length > 0 && (

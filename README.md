@@ -94,7 +94,15 @@ is set, `/api/…` is the query API, and everything else is the UI.
   went, and a breakdown per project. The project and session lists open to
   their full history inside their own scroll region, so opening one does not
   lengthen the page by however many rows happen to exist, and the session list
-  fetches its next page as that region is scrolled.
+  fetches its next page as that region is scrolled. Both drill in: a project
+  opens its own page, a session opens its timeline.
+- **Data coverage** — whether the figures above can be trusted. Every gap is
+  reported with the share of turns it touches and the figure it moves, because
+  a count on its own ("1,815 turns without thinking tokens") does not answer
+  the question it raises.
+- **Project** — one repository's spend, and its sessions. Scoped by the path
+  digest rather than the display name: two directories can share a name, and a
+  link keyed on what is written on screen would quietly merge them.
 - **Session timeline** — one column per turn, positioned by when it started and
   stacked by how its tokens were billed. Wide gaps are where a five-minute
   cache window can lapse, and the cache-write band that follows is the reload
@@ -353,8 +361,15 @@ The scale benchmark writes a few hundred megabytes and is skipped under
 
 Transcripts record the conversation, not the request, so two things the proxy
 sees are absent when tailing: the tool *catalogue* offered to the model (only
-tools actually invoked appear), and per-turn latency. Claude Code writes
-`turn_duration` records separately, which would close the latency gap.
+tools actually invoked appear), and per-request latency. The turn table drops
+its latency columns rather than filling them with em-dashes, and says why once.
+
+Claude Code does write `turn_duration` system records, but they do not close
+that gap. They cover 252 of 6,719 assistant records on this machine — they are
+emitted per user prompt, not per API call, by recent builds only — and they
+measure wall-clock time including tool execution, which is a different quantity
+from request latency. Ingesting them would populate a column four percent of the
+time with something that does not mean what the column says.
 
 ## Status
 

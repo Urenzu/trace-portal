@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api, type Health, type Stats } from "./api";
 import { Dashboard } from "./components/Dashboard";
 import { DataCoverage } from "./components/DataCoverage";
+import { ProjectView } from "./components/ProjectView";
 import { SessionList } from "./components/SessionList";
 import { SessionView } from "./components/SessionView";
 
@@ -23,17 +24,30 @@ function resolveTheme(theme: Theme): "light" | "dark" {
     : "light";
 }
 
-/** The session id lives in the hash so a timeline can be linked and reloaded. */
-function readHash(): string | null {
+/**
+ * What the hash is pointing at. Routing through the hash keeps every view
+ * linkable and survives a reload, which matters most for the two drill-ins: a
+ * session timeline and a project.
+ */
+type Route =
+  | { kind: "dashboard" }
+  | { kind: "session"; id: string }
+  | { kind: "project"; id: string };
+
+function readHash(): Route {
   const hash = window.location.hash.replace(/^#\/?/, "");
-  return hash.startsWith("session/")
-    ? decodeURIComponent(hash.slice("session/".length))
-    : null;
+  for (const kind of ["session", "project"] as const) {
+    const prefix = `${kind}/`;
+    if (hash.startsWith(prefix)) {
+      return { kind, id: decodeURIComponent(hash.slice(prefix.length)) };
+    }
+  }
+  return { kind: "dashboard" };
 }
 
 export function App() {
   const [days, setDays] = useState(7);
-  const [sessionId, setSessionId] = useState<string | null>(readHash);
+  const [route, setRoute] = useState<Route>(readHash);
   const [stats, setStats] = useState<Stats | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [statsError, setStatsError] = useState<string | null>(null);
@@ -42,7 +56,7 @@ export function App() {
   );
 
   useEffect(() => {
-    const onHash = () => setSessionId(readHash());
+    const onHash = () => setRoute(readHash());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -85,15 +99,20 @@ export function App() {
     };
   }, [days]);
 
-  function openSession(id: string) {
-    window.location.hash = `#/session/${encodeURIComponent(id)}`;
-    setSessionId(id);
+  function go(next: Route) {
+    window.location.hash =
+      next.kind === "dashboard"
+        ? ""
+        : `#/${next.kind}/${encodeURIComponent(next.id)}`;
+    setRoute(next);
+    // A drill-in is a new page, so it starts at the top rather than wherever
+    // the reader happened to be scrolled in the one before it.
+    window.scrollTo({ top: 0 });
   }
 
-  function closeSession() {
-    window.location.hash = "";
-    setSessionId(null);
-  }
+  const openSession = (id: string) => go({ kind: "session", id });
+  const openProject = (id: string) => go({ kind: "project", id });
+  const goHome = () => go({ kind: "dashboard" });
 
   return (
     <div className="app">
@@ -131,12 +150,24 @@ export function App() {
         <div className="error-banner">Could not load stats: {statsError}</div>
       )}
 
-      {sessionId ? (
-        <SessionView id={sessionId} days={days} onBack={closeSession} />
-      ) : (
+      {route.kind === "session" && (
+        <SessionView id={route.id} days={days} onBack={goHome} />
+      )}
+
+      {route.kind === "project" && (
+        <ProjectView
+          projectId={route.id}
+          days={days}
+          project={stats?.projects?.find((p) => p.project_id === route.id)}
+          onBack={goHome}
+          onOpenSession={openSession}
+        />
+      )}
+
+      {route.kind === "dashboard" && (
         <>
-          {health?.coverage && <DataCoverage coverage={health.coverage} />}
-          {stats && <Dashboard stats={stats} />}
+          {health && <DataCoverage health={health} />}
+          {stats && <Dashboard stats={stats} onOpenProject={openProject} />}
           <SessionList days={days} onOpen={openSession} />
         </>
       )}

@@ -148,3 +148,27 @@ func TestSessionsPageFilterIsASubset(t *testing.T) {
 		}
 	}
 }
+
+// A drill-in link keys on the project digest, which must select exactly one
+// project even when two share a display name.
+func TestFilterProjectIDIsExact(t *testing.T) {
+	a := sample()
+	a.Project, a.ProjectID = "maps", "0b12ab34cd56"
+	b := sample()
+	b.Project, b.ProjectID = "maps", "7ef8ab34cd56"
+
+	f := ParseFilter("projectid:0b12ab34cd56")
+	if !f.Match(a) {
+		t.Error("did not match its own project")
+	}
+	if f.Match(b) {
+		t.Error("matched a different project with the same name")
+	}
+	if ParseFilter("projectid:0b12").Match(a) {
+		t.Error("a partial digest must not match; the term is generated, not typed")
+	}
+	// The display name still matches both, which is why the link cannot use it.
+	if !ParseFilter("project:maps").Match(a) || !ParseFilter("project:maps").Match(b) {
+		t.Error("the display name should match both projects")
+	}
+}

@@ -17,7 +17,13 @@ const TOP = 6;
  * session with a warm cache and a short one that keeps re-seeding it cost very
  * different amounts for the same work.
  */
-export function Projects({ projects }: { projects: ProjectStat[] }) {
+export function Projects({
+  projects,
+  onOpen,
+}: {
+  projects: ProjectStat[];
+  onOpen?: (projectId: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -109,11 +115,14 @@ export function Projects({ projects }: { projects: ProjectStat[] }) {
             </thead>
             <tbody>
               {shown.map((p) => (
-                <tr key={p.project_id}>
+                <tr
+                  key={p.project_id}
+                  className={onOpen ? "clickable" : undefined}
+                  onClick={onOpen ? () => onOpen(p.project_id) : undefined}
+                  title={onOpen ? `Open ${p.project}` : p.project_id}
+                >
                   <td>
-                    <span style={{ fontWeight: 550 }} title={p.project_id}>
-                      {label(p)}
-                    </span>
+                    <span style={{ fontWeight: 550 }}>{label(p)}</span>
                     {/* Not every directory is a repository. Saying so beats
                         presenting a Downloads folder as a project. */}
                     {!p.in_repo && (

@@ -853,3 +853,50 @@ pre.payload {
   color: var(--text-primary);
   background: var(--surface-0);
 }
+
+/* --- data coverage detail ----------------------------------------------- */
+
+.cov-detail {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.cov-row {
+  padding: 13px 0;
+  border-bottom: 1px solid var(--grid);
+}
+
+.cov-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.cov-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+
+.cov-row-head .muted {
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cov-row p {
+  margin: 5px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-muted);
+  max-width: 78ch;
+}
+
+.cov-versions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}

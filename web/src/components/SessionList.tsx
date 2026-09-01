@@ -33,9 +33,21 @@ const SEARCH_HINT = [
 interface Props {
   days: number;
   onOpen: (id: string) => void;
+  /**
+   * A filter term the list is permanently narrowed by — how the project view
+   * reuses this list. It is combined with whatever the reader types rather
+   * than replaced by it, so searching inside a project stays inside it.
+   */
+  scope?: string;
+  title?: string;
 }
 
-export function SessionList({ days, onOpen }: Props) {
+export function SessionList({
+  days,
+  onOpen,
+  scope,
+  title = "Sessions",
+}: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [cursor, setCursor] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
@@ -55,6 +67,8 @@ export function SessionList({ days, onOpen }: Props) {
     return () => clearTimeout(timer);
   }, [input]);
 
+  const sent = [scope, query].filter(Boolean).join(" ");
+
   // Changing the window or the search restarts the list rather than appending
   // to results from a different range.
   useEffect(() => {
@@ -63,7 +77,7 @@ export function SessionList({ days, onOpen }: Props) {
     setError(null);
 
     api
-      .sessions(days, 50, undefined, query)
+      .sessions(days, 50, undefined, sent)
       .then((page) => {
         if (cancelled) return;
         setSessions(page.sessions);
@@ -83,13 +97,13 @@ export function SessionList({ days, onOpen }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [days, query]);
+  }, [days, sent]);
 
   const loadMore = useCallback(async () => {
     if (!cursor || loading) return;
     setLoading(true);
     try {
-      const page = await api.sessions(days, 50, cursor, query);
+      const page = await api.sessions(days, 50, cursor, sent);
       setSessions((prev) => [...prev, ...page.sessions]);
       setCursor(page.next_cursor);
       setDaysScanned((prev) => prev + page.days_scanned);
@@ -98,7 +112,7 @@ export function SessionList({ days, onOpen }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [cursor, days, loading, query]);
+  }, [cursor, days, loading, sent]);
 
   // Paging on scroll rather than on a click. Opening the full history should
   // not drop hundreds of rows onto the page at once, and it should not make
@@ -116,7 +130,7 @@ export function SessionList({ days, onOpen }: Props) {
   return (
     <div className="card">
       <CardHead
-        title="Sessions"
+        title={title}
         meta={searching ? `${shown} matching` : `${shown} loaded`}
         action={
           <SearchBox

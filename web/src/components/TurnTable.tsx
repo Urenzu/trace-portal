@@ -4,6 +4,7 @@ import { api, type Turn } from "../api";
 import { tokens, usd, clockTime, msOrUnknown, pct } from "../format";
 import { daySegments, dayLabel, idleLabel } from "./days";
 
+/** Columns when latency is known; two fewer when it is not. */
 const COLUMNS = 12;
 
 /**
@@ -35,6 +36,13 @@ export function TurnTable({ turns }: { turns: Turn[] }) {
   );
   const multiDay = segments.length > 1;
 
+  // Transcripts record the conversation, not the request, so a tailed turn
+  // carries no timing at all. Two columns of em-dashes on every row is not a
+  // measurement being reported as unknown — it is furniture. They appear only
+  // when something actually observed them, which today means the proxy.
+  const timed = turns.some((t) => t.ttfb_ms > 0 || t.duration_ms > 0);
+  const columns = timed ? COLUMNS : COLUMNS - 2;
+
   return (
     <div className="table-wrap">
       <table>
@@ -48,8 +56,8 @@ export function TurnTable({ turns }: { turns: Turn[] }) {
             <th className="right">Output</th>
             <th className="right">Hit</th>
             <th className="right">Cost</th>
-            <th className="right">TTFB</th>
-            <th className="right">Total</th>
+            {timed && <th className="right">TTFB</th>}
+            {timed && <th className="right">Total</th>}
             <th>Tools</th>
             <th>Stop</th>
           </tr>
@@ -59,7 +67,7 @@ export function TurnTable({ turns }: { turns: Turn[] }) {
             <Fragment key={segment.key}>
               {multiDay && (
                 <tr className="day-rule">
-                  <td colSpan={COLUMNS}>
+                  <td colSpan={columns}>
                     <div className="day-rule-inner">
                       <span className="day-rule-date">{dayLabel(segment)}</span>
                       {segment.gapMS > 0 && (
@@ -112,12 +120,16 @@ export function TurnTable({ turns }: { turns: Turn[] }) {
                       <td className="right num">
                         {turn.priced ? usd(turn.cost_usd) : "—"}
                       </td>
-                      <td className="right num muted">
-                        {msOrUnknown(turn.ttfb_ms)}
-                      </td>
-                      <td className="right num muted">
-                        {msOrUnknown(turn.duration_ms)}
-                      </td>
+                      {timed && (
+                        <td className="right num muted">
+                          {msOrUnknown(turn.ttfb_ms)}
+                        </td>
+                      )}
+                      {timed && (
+                        <td className="right num muted">
+                          {msOrUnknown(turn.duration_ms)}
+                        </td>
+                      )}
                       <td>
                         {turn.tool_calls?.length ? (
                           turn.tool_calls.map((t) => (
@@ -153,7 +165,7 @@ export function TurnTable({ turns }: { turns: Turn[] }) {
                     {open && (
                       <tr>
                         <td
-                          colSpan={COLUMNS}
+                          colSpan={columns}
                           style={{
                             background: "var(--surface-2)",
                             whiteSpace: "normal",
