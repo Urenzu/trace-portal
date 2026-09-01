@@ -1,24 +1,14 @@
 # trace-portal
 
-Local-first observability for LLM agent sessions.
-
-trace-portal reads the session logs your agent tools already write and turns
-them into a timeline of what each turn cost: token usage, cache reads and
-writes, tool calls, context composition.
+Observability for LLM agent sessions. It reads the session logs your agent tools
+already write and turns them into a timeline of what each turn cost: tokens,
+cache reads and writes, tool calls, spend per project and branch.
 
 It does not sit between your agents and the API. Agent CLIs keep local session
-logs because they need them for resume and context management, and token usage
-rides along because the tool needs it to manage its own context window. Reading
-those logs gets the same numbers a proxy would, without being in the request
-path — so if trace-portal is broken, stopped, or mid-upgrade, your agents keep
-working.
-
-Everything stays on your machine. Nothing is uploaded anywhere.
-
-The server binds to loopback and has no authentication, which is the right
-trade for a single-user local tool. Binding it wider with `-addr` exposes the
-whole archive to anyone who can reach the port; there is no access control to
-fall back on.
+logs for resume and context management, and token usage rides along because the
+tool needs it to manage its own context window. Reading those logs gets the same
+numbers a proxy would without being in the request path — so if trace-portal is
+broken, stopped, or mid-upgrade, your agents keep working.
 
 ## Quick start
 
@@ -29,15 +19,15 @@ go build -o trace-portal ./cmd/trace-portal
 ./trace-portal
 ```
 
-That is the whole setup. It finds your agent logs, backfills the history
-already on disk, and follows them for new turns. Open <http://127.0.0.1:8317>.
+That is the whole setup. It finds your agent logs, backfills the history already
+on disk, and follows them for new turns. Open <http://127.0.0.1:8317>.
+
+The frontend is compiled into the binary, so there is nothing to serve
+separately and no Node required to build it.
 
 | Source | Log directory |
 | --- | --- |
 | Claude Code | `~/.claude/projects/**/*.jsonl` |
-
-Other agent CLIs keep comparable logs and will be added once Claude Code is
-fully covered.
 
 ### Flags
 
@@ -48,14 +38,15 @@ fully covered.
 | `-poll` | `2s` | How often to check agent logs (`0` disables) |
 | `-compact-every` | `1h` | How often to compact completed days (`0` disables) |
 | `-proxy` | `false` | Also accept proxied API traffic |
-| `-upstream` | `https://api.anthropic.com` | Upstream for the proxy |
 | `-claude-dir` | `~/.claude/projects` | Claude Code transcript directory |
-| `-v` | `false` | Verbose logging |
+
+Server-mode flags — sign-in, Postgres, object storage — are covered under
+[Running it as a server](#running-it-as-a-server).
 
 ### The optional proxy
 
-For a tool that keeps no local log — an SDK app you wrote — start with `-proxy`
-and point it at the listener:
+For a tool that keeps no local log, start with `-proxy` and point it at the
+listener:
 
 ```sh
 ./trace-portal -proxy
@@ -69,8 +60,8 @@ too. That is why it is off by default.
 ## What is recorded
 
 Only measurements. No prompts, no responses, no code, no tool arguments — the
-tailer reads transcripts for their usage numbers and never copies their
-content. A month of heavy use compacts to about 7 KB.
+tailer reads transcripts for their usage numbers and never copies their content.
+A month of heavy use compacts to about 7 KB.
 
 | Recorded | Not recorded |
 | --- | --- |
@@ -81,70 +72,250 @@ content. A month of heavy use compacts to about 7 KB.
 | session and message ids, timings | API keys or tokens |
 
 Absolute working directories are reduced before they are stored. A path like
-`C:\Users\<name>\dev\projects\apex-analysis` names the operator and every
-project beside it, so only the project name is kept, alongside a one-way digest
-of the path. The path itself is never written, and a test walks the whole
-archive to prove it.
+`C:\Users\<name>\dev\projects\apex-analysis` names the operator and every project
+beside it, so only the project name is kept, alongside a one-way digest of the
+path. A test walks the whole archive to prove the path itself is never written.
 
-Git branch names are kept as written, so avoid putting anything sensitive in a
-branch name if you later sync this anywhere.
+Git branch names are kept as written, so avoid putting anything sensitive in one.
 
 ## The UI
 
-The frontend is built into the binary, so there is nothing to serve separately.
-One port carries all three surfaces: `/v1/…` is proxied upstream when `-proxy`
-is set, `/api/…` is the query API, and everything else is the UI.
-
-- **Activity** — a calendar of the selected window, one cell per day, beside
-  the turns, spend, active days and busiest day it holds. A first and last date
-  read as continuous coverage and rarely are: fifteen active days inside a
-  twenty-nine day span is the shape no total can show. Days before the archive
-  begins are drawn as their own state, because "nothing was recorded" and
-  "nothing could have been recorded" are different claims. Coverage caveats —
-  which builds produced the data, which fields they never emitted — sit behind
-  a disclosure.
+- **Activity** — a calendar of the window, one cell per day, beside the turns,
+  spend and active days it holds. Fifteen active days inside a twenty-nine day
+  span is the shape no total can show. Days before the archive begins are drawn
+  as their own state, because "nothing was recorded" and "nothing could have
+  been recorded" are different claims.
 - **Dashboard** — spend, what caching saved, cache hit rate, where the tokens
-  went, spend over time, and a breakdown per project. The error tile is a way
-  in rather than a readout: clicking it aims the session list at `has:errors`.
-  The project and session lists open to their full history inside their own
-  scroll region, so opening one does not lengthen the page by however many rows
-  happen to exist, and the session list fetches its next page as that region is
-  scrolled. Both drill in: a project opens its own page, a session opens its
-  timeline.
-- **Spend over time** — daily cost across the window, folding to weeks above
-  120 days where a bar would be thinner than its own hover target. One series,
-  so no legend; one axis, so the cache hit rate that explains a spike is in the
-  tooltip rather than on a second y-scale.
-- **Project** — one repository over time: spend, the median session cost, cache
-  hit rate, a spend trend, and a per-branch table. Branch is the cut that earns
-  its place — on real data one repository showed `main` at a 45% cache hit rate
-  against 99% on its feature branches, which is a concrete thing to go and look
-  at. Branch rows filter the session list below them. Scoped by the path digest
-  rather than the display name: two directories can share a name, and a link
-  keyed on what is written on screen would quietly merge them.
+  went, spend over time, and a breakdown per project. The error tile is a way in
+  rather than a readout: clicking it aims the session list at `has:errors`.
+- **Project** — one repository over time, with a per-branch table. Branch is the
+  cut that earns its place: on real data one repository showed `main` at a 45%
+  cache hit rate against 99% on its feature branches.
 - **Session timeline** — one column per turn, positioned by when it started and
-  stacked by how its tokens were billed. Wide gaps are where a five-minute
-  cache window can lapse, and the cache-write band that follows is the reload
-  being paid for. That relationship is why the x-axis is time, not turn index.
-  Long sessions group into at most 120 columns of equal time width, so the gaps
-  survive. A session resumed on a later day gets a dashed rule at the resume,
-  labelled with how long it idled.
+  stacked by how its tokens were billed. Wide gaps are where a five-minute cache
+  window lapses, and the cache-write band that follows is the reload being paid
+  for. That relationship is why the x-axis is time, not turn index.
 - **Turn table** — every value the chart encodes, as text, plus context
-  composition and stored payloads fetched on demand. Rows are oldest first and
-  grouped under the day they ran on, because a resumed session's clock times
-  otherwise read as a sorting fault.
+  composition and stored payloads fetched on demand.
 
-Every view is linkable. The selected window rides in the hash alongside the
-route — `#/session/<id>?d=30` — so a shared link opens on the window it was read
-on, and the back button undoes a window change the way it undoes a drill-in.
+Every view is linkable: the selected window rides in the hash alongside the
+route, so a shared link opens on the window it was read on.
 
-Colour choices were validated for colour-vision deficiency and for contrast
-against both the light and dark surfaces, and no value is ever encoded by
-colour alone. Colour is only allowed to mean something twice: the four token
-classes, where it carries identity, and the single hue shared by the activity
-calendar and the spend chart, where it carries magnitude. Rankings of nominal
-things — tool names, model names — are neutral, because length already carries
-the magnitude there.
+Colour choices were validated for colour-vision deficiency and for contrast in
+both themes, and no value is ever encoded by colour alone.
+
+## Query API
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/health` | Status, days captured, per-day volume, ingest coverage |
+| `GET /api/sessions` | Sessions in the window (paged, searchable, sortable) |
+| `GET /api/sessions/{id}` | One session with its turns |
+| `GET /api/stats` | Totals plus a daily series |
+| `GET /api/projects/{id}` | One project: totals, daily series, branches, tools |
+| `GET /api/blobs/{ref}` | A stored payload, fetched on demand |
+
+All accept `?from=` and `?to=` (RFC3339 or `YYYY-MM-DD`) or `?days=N`; the window
+defaults to 7 days and is clamped to ten years. `/api/sessions` pages with
+`?limit=` and `?cursor=`, searches with `?q=`, and orders with `?sort=` —
+`recent` (default), `cost`, `turns` or `errors`.
+
+Recency is the only order the paged scan produces for free: it walks days
+backwards and stops when the page is full. The others cannot terminate early,
+because the most expensive session in a window may be its oldest.
+
+Search is a typed predicate over the columns a listing already reads — there is
+no text index, because nothing here records prompts or tool arguments, so there
+is no corpus to index:
+
+```
+fin-agentic            any column contains it
+project:trace-portal   that column
+branch:main model:opus several terms, all of which must hold
+tool:PowerShell   has:errors   cost:>5   turns:>100
+```
+
+Costs come from first-party Anthropic list prices including cache multipliers.
+**On a subscription none of this is billed** — the figures are what the usage
+*would* cost at list price, which is still the right number for comparing
+sessions or spotting a cache regression.
+
+## How it works
+
+```
+cmd/trace-portal   entrypoint
+internal/source    readers for agent session logs
+internal/ingest    backfills and follows those logs into the store
+internal/trace     the event model every stage shares
+internal/store     append-only JSONL log and blob store (local)
+internal/postgres  the same, for a server
+internal/eventstore the interface those two share
+internal/compact   JSONL to partitioned Parquet, rollups, and the read path
+internal/objectstore where compacted history lives: a directory, or S3/R2/MinIO
+internal/query     folds events into sessions and turns
+internal/pricing   model rates and cost computation
+internal/api       the read API
+internal/auth      OIDC sign-in and the CLI device flow
+internal/collect   shipping to a server, and receiving from a collector
+internal/tenant    resolves a tenant to its storage
+internal/web       the built frontend, embedded
+internal/proxy     optional reverse proxy
+web/               React + TypeScript + Vite source
+```
+
+Every reader normalizes into one event model, so adding a tool is one file
+rather than a new pipeline. Several sources can observe the same call, so turns
+are keyed by the API's own message id (`msg_…`) and collapse into one turn no
+matter how many sources recorded it. That key matters for a subtler reason too:
+Claude Code writes one record per content block, each repeating the whole
+message's usage, so summing records would nearly double every total.
+
+### Storage and compaction
+
+The hot path appends, because appending is fast and crash-safe. Reading it back
+is not: a year of heavy use is hundreds of megabytes of JSON that must be parsed
+row-wise to answer any question.
+
+A background job rewrites each completed day into columnar Parquet, partitioned
+by date, alongside small pre-aggregated rollups. Today is never compacted, since
+it is still being appended to.
+
+```
+<data>/events/2026-08-29.jsonl        raw append-only log
+<data>/compact/2026-08-28/            one partition per completed day
+<data>/compact/rollup/                pre-aggregated, spans every day
+```
+
+Measured over 365 days of heavy use (1,000 turns/day, 365k turns):
+
+| Query | JSONL | Parquet | |
+| --- | --- | --- | --- |
+| Aggregate stats, 365 days | 4,345 ms | **3 ms** | 1,473x |
+| Session list, first page | 7,628 ms | **22 ms** | 347x |
+| On disk | 298 MB | **6.2 MB** | 48x smaller |
+
+The dashboard win comes from the rollups rather than the file format: stats read
+one row per day, so cost is O(days) and stays flat as history grows. They live
+in a single file spanning every day, because opening one small file per day
+costs milliseconds each and that overhead dominates a wide window — a fact that
+gets roughly twenty times more expensive when those files are in a bucket.
+
+Two properties follow from that, and both are load-bearing once storage is
+remote. A day covered by neither the rollup nor the write-ahead window is known
+to be empty without reading anything: an archive with 15 active days in a year
+would otherwise spend most of a query proving 350 days were empty. And the
+rollup is held in memory, invalidated by the one place that writes it.
+
+Partitions are ordinary Parquet with no engine lock-in:
+
+```sql
+SELECT model, sum(cost_usd) FROM 'compact/*/turns.parquet' GROUP BY model
+```
+
+Listing and lookup terminate early. A session's turns are *not* contiguous — an
+agent CLI reuses the session id when a conversation is resumed — so a rollup of
+one row per session per day records the days each session actually touched.
+Inferring it instead split one conversation into several listed sessions and
+truncated its detail at the newest fragment.
+
+### Why this keeps its own archive
+
+Claude Code prunes transcripts after roughly a month. Everything older is gone,
+so multi-month analysis is only possible if something durable captured the data
+while it existed. It follows that trace-portal has to run regularly: a gap longer
+than the retention window is unrecoverable.
+
+Nothing here ever deletes an ingested trace, and three properties keep the
+archive trustworthy, each covered by a test: it outlives its source, re-reading
+cannot double-count, and compaction resolves duplicates permanently.
+
+### Schema drift
+
+Agent log formats are internal and move constantly. One machine in daily use
+went through fifteen Claude Code versions in twenty-six days, and the record
+shape changed three times inside that span.
+
+Drift is not usually loud — a renamed field starts reading as zero and the
+dashboard keeps showing a confident number. Four rules prevent that:
+
+- **Absent is not zero.** A value the producing build never reported is stored
+  as absent. Thinking tokens are the live example: 1,815 of 6,236 real turns
+  came from builds predating `output_tokens_details`.
+- **Every event records the build that produced it.**
+- **Unrecognised fields are counted, not ignored.** This is how the ignored
+  API-error fields were found: transcripts had been recording rate limits all
+  along, and a throttled run was reporting zero errors.
+- **Shape variation must not fail a record.** `message.content` is an array on
+  assistant records and a bare string on some user records.
+
+The UI reports all of this rather than hiding it.
+
+### Why cache reads are so large
+
+A stateless API means every turn resends the whole conversation, so total cache
+reads are roughly turns multiplied by mean context — which grows quadratically
+with session length. One real 2,746-turn session read 942M cached tokens against
+a mean context of 346K: at list prices, the difference between roughly $4,700 and
+$470 for that session alone.
+
+Fresh input tokens are not the new message. New content is written to cache, so
+the uncached remainder is a constant 1–2 tokens per turn on 94% of real turns.
+
+## Running it as a server
+
+The same binary serves many people. Storage is chosen by configuration, not by a
+different build:
+
+- **Postgres** holds the days still being written to, because object storage
+  cannot append and a server needs concurrent writers.
+- **Object storage** — S3, R2, or MinIO — holds compacted Parquet, which is
+  written once and then only read.
+- Unset, both stay local files, which is what keeps the single-machine tool a
+  single file with nothing to install.
+
+```sh
+docker compose up -d          # server + Postgres + MinIO
+trace-portal login -server https://app.example.com
+```
+
+Sign-in is OpenID Connect against any issuer, plus RFC 8628 device authorization
+for the CLI — served by this system rather than by the provider, since most
+providers do not implement it and depending on theirs would make the CLI work
+with only some of them. Sign-in is off unless an issuer is configured, and with
+it off the ingest endpoint does not exist either.
+
+A collector ships the local archive rather than the tailer, so a server that is
+down delays delivery and can never cost a turn. Every tenant resolves to its own
+storage root, and identity on an incoming batch comes from the credential rather
+than the payload.
+
+| Flag | Environment | Description |
+| --- | --- | --- |
+| `-postgres` | `TRACE_PORTAL_POSTGRES` | Postgres URL for the hot window |
+| `-s3-endpoint` | `TRACE_PORTAL_S3_ENDPOINT` | S3-compatible endpoint |
+| `-s3-bucket` | `TRACE_PORTAL_S3_BUCKET` | Bucket for compacted partitions |
+| `-oidc-issuer` | `TRACE_PORTAL_OIDC_ISSUER` | Enables sign-in when set |
+| `-oidc-client-id` | `TRACE_PORTAL_OIDC_CLIENT_ID` | OAuth client id |
+| `-public-url` | `TRACE_PORTAL_PUBLIC_URL` | Externally reachable base URL |
+
+Environment wins over flags, because a container is configured with environment
+variables and a secret on a command line is visible in the process table.
+
+## Development
+
+```sh
+go test ./...              # unit tests
+go test -race ./...        # with the race detector
+
+# Postgres and object storage tests skip unless a backend is reachable:
+docker compose up -d postgres minio
+TRACE_PORTAL_TEST_POSTGRES='postgres://trace:trace@localhost:5433/trace_portal?sslmode=disable' \
+TRACE_PORTAL_TEST_S3=localhost:9000 go test ./...
+```
+
+Postgres is published on 5433, not 5432, so it cannot collide with an
+already-installed one — when they collide, every connection lands on the other
+database while the container still reports healthy.
 
 Working on the frontend:
 
@@ -156,269 +327,42 @@ npm run build   # rebuilds the bundle embedded in the binary
 ```
 
 The built bundle is committed under `internal/web/dist`, so `go build` works
-without Node installed. Rebuild it whenever you change `web/`.
+without Node installed. Rebuild it whenever you change `web/`, or the binary
+keeps serving the old UI and nothing tells you.
 
-## Query API
-
-| Endpoint | Description |
-| --- | --- |
-| `GET /api/health` | Status, days captured, per-day volume, ingest coverage |
-| `GET /api/sessions` | Sessions in the window (paged, searchable, sortable) |
-| `GET /api/sessions/{id}` | One session with its turns |
-| `GET /api/stats` | Totals plus a daily series: cost, cache, projects, tools |
-| `GET /api/projects/{id}` | One project: totals, daily series, branches, tools |
-| `GET /api/blobs/{ref}` | A stored payload, fetched on demand |
-
-All endpoints accept `?from=` and `?to=` (RFC3339 or `YYYY-MM-DD`) or `?days=N`;
-the window defaults to 7 days and is clamped to ten years, since every read path
-walks it a day at a time and the transcripts it reads are pruned after about a
-month. `/api/sessions` pages with `?limit=` (default 50, max 500) and `?cursor=`,
-searches with `?q=`, and orders with `?sort=` — `recent` (default), `cost`,
-`turns` or `errors`.
-
-Recency is the only order the paged scan produces for free: it walks days
-backwards and stops when the page is full. The others cannot terminate early,
-because the most expensive session in a window may be its oldest, so they read
-the window and rank it. That is a fair price for a question someone asked
-deliberately, and the reason recency stays the default.
-
-`/api/stats` and `/api/projects/{id}` both carry `by_day`, one row per day with
-turns, sessions, errors, cost and the token split. Days holding nothing are
-omitted rather than sent as zeros — the reader fills its own gaps, and a year of
-mostly-idle days is a far smaller payload.
-
-Costs come from first-party Anthropic list prices, including the cache
-multipliers — reads at 0.1x base input, writes at 1.25x (5-minute TTL) or 2x
-(1-hour). Turns whose model has no known price are reported as `unpriced_turns`
-rather than silently costed at zero.
-
-**On a subscription, none of this is billed.** The figures are what the usage
-*would* cost at list price. Still the right number for comparing sessions or
-spotting a cache regression.
-
-## How it works
-
-```
-cmd/trace-portal   entrypoint
-internal/source    readers for agent session logs
-internal/ingest    backfills and follows those logs into the store
-internal/trace     the event model every stage shares
-internal/store     append-only JSONL log and blob store
-internal/compact   JSONL to partitioned Parquet, rollups, and the read path
-internal/query     folds events into sessions and turns
-internal/pricing   model rates and cost computation
-internal/api       the read API
-internal/web       the built frontend, embedded
-internal/proxy     optional reverse proxy
-internal/bench     scale and overhead measurements
-web/               React + TypeScript + Vite source
-```
-
-Every reader normalizes into one event model, so adding a tool is one file
-rather than a new pipeline. Several sources can observe the same call — a
-tailed log and the proxy both see it — so turns are keyed by the API's own
-message id (`msg_…`). The same exchange collapses into one turn no matter how
-many sources recorded it, and each contributes the fields only it knows.
-
-That key matters for a subtler reason too: Claude Code writes one record per
-content block of an assistant message, each repeating the whole message's
-usage. Real sessions average 1.9 records per message, so summing records would
-nearly double every total.
-
-### Storage and compaction
-
-The hot path appends to JSONL because appending a line is fast and crash-safe.
-Reading it back is not: a year of heavy use is hundreds of megabytes of JSON
-that must be parsed row-wise to answer any question.
-
-A background job rewrites each completed day into columnar Parquet, partitioned
-by date, alongside small pre-aggregated rollups. Today is never compacted, since
-its log is still being appended to.
-
-```
-<data>/events/2026-08-29.jsonl        raw append-only log
-<data>/blobs/ab/cdef….json.gz         payloads, content-addressed
-<data>/compact/2026-08-28/            one partition per completed day
-<data>/compact/rollup/                pre-aggregated, spans every day
-```
-
-Measured over 365 days of heavy use (1,000 turns/day, 365k turns):
-
-| Query | JSONL | Parquet | |
-| --- | --- | --- | --- |
-| Aggregate stats, 365 days | 4,345 ms | **3 ms** | 1,473x |
-| Session list, first page of 365 days | 7,628 ms | **22 ms** | 347x |
-| On disk | 298 MB | **6.2 MB** | 48x smaller |
-
-The dashboard win comes from the rollups rather than the file format: stats read
-one row per day, so cost is O(days) and stays flat as history grows. The rollups
-live in a single file spanning every day, because opening one small file per day
-costs milliseconds each and that overhead dominates a wide window.
-
-Listing and lookup terminate early. Listing walks days backwards and stops once
-the page is full, and a session is emitted only once no older day can still add
-to it — which is what keeps a paged list identical to an unpaged one.
-
-Knowing when that is true needs an index, because a session's turns are *not*
-contiguous. An agent CLI reuses the session id when a conversation is resumed,
-so one session routinely has turns either side of an idle day. A rollup of one
-row per session per day records the days each session actually touched, so a
-lookup reads only those days and a listing knows a paused session from a
-finished one. Inferring it instead — treating the first day without turns as the
-end — split one conversation into several listed sessions and truncated its
-detail at the newest fragment.
-
-Partitions are ordinary Parquet with no engine lock-in:
-
-```sql
-SELECT model, sum(cost_usd) FROM 'compact/*/turns.parquet' GROUP BY model
-```
-
-### Searching history
-
-There is no text index, and there should not be one. Nothing here records
-prompts, responses, or tool arguments, so there is no corpus to index. What a
-session has is a handful of columns — project, branch, model, the tools it
-invoked, its id — every one of them already dictionary-encoded in the partitions
-a listing reads. A typed predicate over those columns answers the questions
-people actually ask, and costs a string compare per candidate against an index
-that would have to be built, stored, and kept consistent with the archive.
-
-```
-fin-agentic            any of those columns contains it
-project:trace-portal   that column
-branch:main model:opus several terms, all of which must hold
-tool:PowerShell
-has:errors
-cost:>5   turns:>100
-```
-
-Matching is case-insensitive and by substring, because nobody remembers whether
-the repository was `fin-agentic` or `fin_agentic`, and a search that returns
-nothing for a near-miss is worse than one that returns a few extra rows.
-
-It runs server-side, inside the same backwards scan that fills a page. Filtering
-in the browser would only ever search the page already loaded, which is the
-wrong answer to "find that session from three weeks ago". The cost is that a
-narrow search walks the whole window instead of terminating early, so the UI
-says how far back it looked — when a session is missing, the reason is usually
-the window rather than the query.
-
-### Why this keeps its own archive
-
-Claude Code prunes transcripts after roughly a month. Everything older is gone,
-including which models were used and what they cost, so multi-month analysis is
-only possible if something durable captured the data while it existed. It
-follows that trace-portal has to run regularly: a gap longer than the retention
-window is unrecoverable, because the source is gone.
-
-Nothing here ever deletes an ingested trace, and three properties keep the
-archive trustworthy, each covered by a test:
-
-- **It outlives its source.** Deleting a transcript does not change what has
-  already been ingested.
-- **Re-reading cannot double-count.** If the checkpoint is lost the whole
-  history is re-read, but turns are keyed by message id, so totals are
-  unchanged.
-- **Compaction resolves duplicates permanently**, so the durable form never
-  carries them forward.
-
-### What counts as a session
-
-Whatever the agent says it is. Claude Code keeps one session id across a resume,
-so a session is a conversation rather than a sitting, and a long one spans days
-with nights in the middle of it. The UI says so — a resume marker on the
-timeline, a day heading in the turn table — rather than presenting a four-day
-conversation as four hours of work with an odd duration.
-
-### What counts as a project
-
-Cost is attributed to the repository the work happened in, not the directory the
-agent was started from. Those differ constantly: a run in `fin-agentic/apps/web`
-would otherwise become its own project, splitting one repository's spend across
-several rows. On real data that was the difference between eighteen apparent
-projects and ten actual ones, with one repository's cost split three ways.
-
-Ingestion runs on the machine that produced the logs, so the enclosing working
-tree is found by walking up for a `.git` entry, cached per directory. A
-directory outside any repository keeps its own name and is marked as a
-directory rather than presented as a project.
-
-### Schema drift
-
-Agent log formats are internal and move constantly. One machine in daily use
-went through fifteen Claude Code versions in twenty-six days, and the record
-shape changed three times inside that span: `output_tokens_details` appeared
-partway through, `slug` disappeared, `isAbortedMidStream` was added.
-
-Drift is not usually loud — a renamed field starts reading as zero and the
-dashboard keeps showing a confident number. Four rules keep that from happening:
-
-**Absent is not zero.** A value the producing build never reported is stored as
-absent, not as a measured zero. Thinking tokens are the live example: 1,815 of
-6,236 real turns came from builds predating `output_tokens_details`.
-
-**Every event records the build that produced it,** so a gap can be attributed
-to a version rather than guessed at.
-
-**Unrecognised fields are counted, not ignored.** This is how the ignored
-API-error fields were found: transcripts had been recording rate limits all
-along, and a throttled run was reporting zero errors.
-
-**Shape variation must not fail a record.** `message.content` is an array on
-assistant records and a bare string on some user records; typing it concretely
-made every one of those fail to decode.
-
-The UI reports all of this rather than hiding it: which versions produced the
-data, which fields their builds never emitted, and which fields this build does
-not yet read.
-
-### Why cache reads are so large
-
-A stateless API means every turn resends the whole conversation, so the
-accumulated context is re-read on each turn. Total cache reads are roughly turns
-multiplied by mean context, which grows quadratically with session length: one
-real 2,746-turn session read 942M cached tokens against a mean context of 346K.
-At list prices that is the difference between roughly $4,700 and $470 for that
-session alone.
-
-Fresh input tokens are not the new message. New content is written to cache, so
-the uncached remainder is a constant 1–2 tokens per turn on 94% of real turns,
-regardless of context size.
-
-## Development
-
-```sh
-go test ./...              # unit tests
-go test -race ./...        # with the race detector
-go test ./internal/bench -run TestScale -v -timeout 30m
-```
-
-The scale benchmark writes a few hundred megabytes and is skipped under
-`-short`.
+`scripts/dev.ps1` starts the server against local files, or `-Stack` against the
+compose Postgres and MinIO.
 
 ## Known gaps
 
 Transcripts record the conversation, not the request, so two things the proxy
 sees are absent when tailing: the tool *catalogue* offered to the model (only
-tools actually invoked appear), and per-request latency. The turn table drops
-its latency columns rather than filling them with em-dashes, and says why once.
+tools actually invoked appear), and per-request latency. Claude Code's
+`turn_duration` records do not close that gap — they cover 252 of 6,719
+assistant records, are emitted per user prompt rather than per API call, and
+measure wall-clock time including tool execution.
 
-Claude Code does write `turn_duration` system records, but they do not close
-that gap. They cover 252 of 6,719 assistant records on this machine — they are
-emitted per user prompt, not per API call, by recent builds only — and they
-measure wall-clock time including tool execution, which is a different quantity
-from request latency. Ingesting them would populate a column four percent of the
-time with something that does not mean what the column says.
+Still open:
+
+- **No CI.** Every check here is a thing someone remembers to do.
+- **The read API has no tenant routing.** It serves the process's own tenant, so
+  a signed-in user cannot yet be shown their own data on a shared server.
+- **`SessionsRanked` holds a whole window in memory.** Ranking by cost cannot
+  terminate early, so it loads every session in the window to sort it.
+- **Handlers do not thread request context through the compactor.** A client
+  that navigates away leaves its query running to completion.
+- **No frontend tests and no linter.** The date arithmetic alone deserves them.
+- **Binding beyond loopback has no authentication** unless an issuer is
+  configured. `-addr 0.0.0.0:8317` exposes the whole archive.
+- **Per-tenant compaction and retention.** A server compacts one tenant, and
+  nothing yet drops days from Postgres once they are durable in Parquet.
 
 ## Status
 
-v1 is complete and single-user by design: log tailing, storage, compaction,
-the query API, the embedded UI, and an optional proxy. It answers what agent
-work cost, where the cache is working, how that moves day to day, and which
-project and branch the money went to.
+The single-user tool is complete: log tailing, storage, compaction, the query
+API, the embedded UI, and an optional proxy. The cloud path — identity, sign-in,
+the collector/server split, tenant isolation, Postgres, object storage — is
+built and tested but not deployed anywhere.
 
-Deliberately out of scope for v1: multi-user or org-wide analytics, and the
-mechanistic-interpretability layer. Per-engineer attribution in particular is
-not a missing feature but a missing field — nothing records who produced a
-session, and that is the first thing any team view would need.
+Deliberately out of scope: recording prompts or tool arguments, and the
+mechanistic-interpretability layer.

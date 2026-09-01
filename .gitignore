@@ -39,10 +39,7 @@ blobs/
 .env.*
 !.env.example
 
-# Notes kept out of the repository
-goal.md
-Todo.md
-Product.md
+# Scratch notes kept out of the repository
 notes.md
 
 # Agent working files. CLAUDE.md is instructions for whoever's agent is driving
