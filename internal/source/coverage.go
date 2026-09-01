@@ -56,6 +56,7 @@ func (c *Coverage) record(version string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.ensureMapsLocked()
 	c.Parsed++
 	if version != "" {
 		c.ByVersion[version]++
@@ -89,6 +90,7 @@ func (c *Coverage) missing(field string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.ensureMapsLocked()
 	c.MissingField[field]++
 }
 
@@ -106,10 +108,38 @@ func (c *Coverage) noteUnknown(raw []byte, known map[string]bool) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.ensureMapsLocked()
 	for key := range all {
 		if !known[key] {
 			c.UnknownField[key]++
 		}
+	}
+}
+
+// ensureMapsLocked makes a Coverage safe to write into however it was created.
+//
+// NewCoverage allocates all three, but a Coverage that came back from JSON has
+// nil maps wherever a key was absent — and the tags are omitempty, so a report
+// persisted while a counter happened to be empty writes no key at all. Assigning
+// into one of those panics.
+//
+// That is not hypothetical: a checkpoint written before any producing version
+// had been seen reloads with a nil ByVersion, and the first parsed record after
+// the restart kills the ingest goroutine. The panic is recovered and logged, so
+// nothing crashes and nothing is obviously wrong — the archive just stops
+// growing, which is the worst possible failure for a tool whose source is
+// pruned after a month.
+//
+// The caller must hold c.mu.
+func (c *Coverage) ensureMapsLocked() {
+	if c.ByVersion == nil {
+		c.ByVersion = map[string]int{}
+	}
+	if c.MissingField == nil {
+		c.MissingField = map[string]int{}
+	}
+	if c.UnknownField == nil {
+		c.UnknownField = map[string]int{}
 	}
 }
 
@@ -130,6 +160,7 @@ func (c *Coverage) Merge(other *Coverage) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.ensureMapsLocked()
 	c.Records += snapshot.Records
 	c.Parsed += snapshot.Parsed
 	c.Skipped += snapshot.Skipped
