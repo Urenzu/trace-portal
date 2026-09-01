@@ -419,6 +419,32 @@ tr.clickable {
   cursor: pointer;
 }
 
+/* A session is resumed under the same id, so the turn table can cross a
+   midnight. Clock times alone make that read as a sorting fault; the day
+   heading is what tells a reader the list is still in order. */
+.day-rule td {
+  padding: 12px 10px 5px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.day-rule-date {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+.day-rule-note {
+  margin-left: 10px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+tbody tr.day-rule:first-child td {
+  padding-top: 5px;
+}
+
 tr.clickable:hover td {
   background: var(--surface-2);
 }
@@ -502,6 +528,19 @@ pre.payload {
 .gridline {
   stroke: var(--grid);
   stroke-width: 1;
+}
+
+/* Where a session picked up again on a later day. Dashed and neutral: it marks
+   a boundary in time, not a measured value, so it must not read as a series. */
+.day-break line {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.day-break text {
+  fill: var(--text-muted);
+  font-size: 10.5px;
 }
 
 .tooltip {

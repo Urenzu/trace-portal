@@ -88,6 +88,14 @@ func (c *Compactor) SessionsPage(from, to time.Time, limit int, encodedCursor st
 		return SessionPage{}, err
 	}
 
+	// The session-day index says which days each session actually touched, so a
+	// session paused over an idle day is held rather than emitted as finished.
+	// Without it, one conversation resumed the next day was listed twice.
+	idx, err := c.loadIndex()
+	if err != nil {
+		return SessionPage{}, err
+	}
+
 	var (
 		page      SessionPage
 		pending   = map[string][]query.Turn{} // sessions still at the frontier
@@ -112,10 +120,11 @@ func (c *Compactor) SessionsPage(from, to time.Time, limit int, encodedCursor st
 			pending[t.SessionID] = append(pending[t.SessionID], t)
 		}
 
-		// Every session whose earliest turn falls on a later day than the one
-		// just read is now complete: no older day can contain more of it.
+		// A session is complete once the day just read is older than the oldest
+		// day it is known to touch. Its own turns give a lower bound; the index
+		// supplies the true oldest day, including days it skipped entirely.
 		for id, ts := range pending {
-			if earliestDay(ts).After(day) {
+			if oldestDay(idx, id, ts).After(day) {
 				s := query.SessionsFromTurns(ts)[0]
 				delete(pending, id)
 				if cur.after(s) {
@@ -162,6 +171,17 @@ func (c *Compactor) SessionsPage(from, to time.Time, limit int, encodedCursor st
 	return page, nil
 }
 
+// oldestDay is the earliest day a session is known to touch: the earliest of
+// its turns seen so far, pulled back to whatever the index knows. Reading only
+// the turns would place a session's start at the newest side of an idle gap.
+func oldestDay(idx *index, id string, seen []query.Turn) time.Time {
+	oldest := earliestDay(seen)
+	if indexed, ok := idx.oldestDay(id); ok && indexed.Before(oldest) {
+		return indexed
+	}
+	return oldest
+}
+
 func earliestDay(turns []query.Turn) time.Time {
 	earliest := turns[0].StartedAt
 	for _, t := range turns[1:] {
@@ -172,46 +192,79 @@ func earliestDay(turns []query.Turn) time.Time {
 	return truncateDay(earliest)
 }
 
-// SessionDetail returns one session with its turns, reading only the days that
-// session touches.
+// SessionDetail returns one session with its turns, oldest turn first, reading
+// only the days that session touches.
 //
-// A session's turns are contiguous in time, so scanning backwards can stop at
-// the first day that contains none of them once some have been found. Looking
-// up a session in a year-long window therefore costs a couple of partitions
-// rather than all of them.
+// Those days are not contiguous. A conversation resumed the following morning
+// has turns either side of an idle day, and a scan that stopped at the first
+// empty day returned only the newest fragment — the session looked shorter and
+// cheaper than it was, and its earlier days vanished. The session-day index
+// names the days to read instead of inferring them.
 func (c *Compactor) SessionDetail(from, to time.Time, id string) (query.SessionDetail, bool, error) {
 	from, to = from.UTC(), to.UTC()
 	if to.Before(from) {
 		from, to = to, from
 	}
 
+	idx, err := c.loadIndex()
+	if err != nil {
+		return query.SessionDetail{}, false, err
+	}
+
 	var found []query.Turn
-	for day := truncateDay(to); !day.Before(truncateDay(from)); day = day.AddDate(0, 0, -1) {
+	for _, day := range c.daysHolding(idx, id, from, to) {
 		turns, err := c.turnsForDay(day)
 		if err != nil {
 			return query.SessionDetail{}, false, err
 		}
-
-		var onThisDay int
 		for _, t := range turns {
 			if t.SessionID != id || t.StartedAt.Before(from) || t.StartedAt.After(to) {
 				continue
 			}
 			found = append(found, t)
-			onThisDay++
-		}
-
-		// Nothing on this day and something already found: the session began
-		// later than this, so no older day can hold more of it.
-		if onThisDay == 0 && len(found) > 0 {
-			break
 		}
 	}
 
 	if len(found) == 0 {
 		return query.SessionDetail{}, false, nil
 	}
+	// Days are read oldest first and each day's turns are already ordered, but
+	// the sort is what makes chronological order a property of the result
+	// rather than of the read order. The UI marks day boundaries from these
+	// timestamps, so an out-of-order turn would mark a boundary that never
+	// happened.
 	sort.SliceStable(found, func(i, j int) bool { return found[i].StartedAt.Before(found[j].StartedAt) })
 	detail, ok := query.SessionDetailFromTurns(found, id)
 	return detail, ok, nil
+}
+
+// daysHolding lists the days in the window that may hold turns for a session,
+// oldest first.
+//
+// A compacted day is read only when the index places the session on it. An
+// uncompacted day — today, or one not yet rolled up — is always read, since the
+// index cannot know about it yet. With no index at all there is nothing to
+// narrow by, so every day in the window is read.
+func (c *Compactor) daysHolding(idx *index, id string, from, to time.Time) []time.Time {
+	indexed := map[string]bool{}
+	days, known := idx.daysFor(id)
+	for _, d := range days {
+		indexed[d.Format("2006-01-02")] = true
+	}
+
+	var out []time.Time
+	for day := truncateDay(from); !day.After(truncateDay(to)); day = day.AddDate(0, 0, 1) {
+		key := day.Format("2006-01-02")
+		switch {
+		case idx == nil, !c.IsCompacted(day):
+			out = append(out, day)
+		case !idx.covers(day):
+			// Compacted but not yet in the index: the index cannot rule this
+			// day out, so it is read rather than trusted.
+			out = append(out, day)
+		case known && indexed[key]:
+			out = append(out, day)
+		}
+	}
+	return out
 }

@@ -22,6 +22,7 @@ const (
 	modelsFile   = "by_model.parquet"
 	toolsFile    = "by_tool.parquet"
 	projectsFile = "by_project.parquet"
+	sessionsFile = "by_session.parquet"
 )
 
 // Compactor converts completed days of JSONL into Parquet partitions.
@@ -83,7 +84,7 @@ func (c *Compactor) CompactDay(day time.Time, force bool) (bool, error) {
 	for _, t := range turns {
 		rows = append(rows, toRow(t))
 	}
-	dayRow, modelRows, toolRows, projectRows := rollup(day, turns)
+	dayRow, modelRows, toolRows, projectRows, sessionRows := rollup(day, turns)
 
 	// Write into a temp directory and rename it into place, so a crash during
 	// compaction cannot leave a half-written partition that reads as complete.
@@ -106,6 +107,9 @@ func (c *Compactor) CompactDay(day time.Time, force bool) (bool, error) {
 		return false, err
 	}
 	if err := writeParquet(filepath.Join(tmp, projectsFile), projectRows); err != nil {
+		return false, err
+	}
+	if err := writeParquet(filepath.Join(tmp, sessionsFile), sessionRows); err != nil {
 		return false, err
 	}
 
@@ -142,9 +146,10 @@ func (c *Compactor) CompactAll() (int, error) {
 		}
 	}
 
-	// Refresh the consolidated rollup so wide queries stay a fixed three file
-	// opens. Also rebuild when nothing was written but no index exists yet, so
-	// a directory compacted by an older build picks one up.
+	// Refresh the consolidated rollup so wide queries stay a fixed number of
+	// file opens. Also rebuild when nothing was written but the index is absent
+	// or predates the session-day table, so an archive compacted by an older
+	// build picks one up without needing to be recompacted.
 	if written > 0 || !c.hasIndex() {
 		if err := c.RebuildIndex(); err != nil {
 			return written, err
@@ -154,8 +159,12 @@ func (c *Compactor) CompactAll() (int, error) {
 }
 
 func (c *Compactor) hasIndex() bool {
-	_, err := os.Stat(c.indexPath(dayFile))
-	return err == nil
+	for _, name := range []string{dayFile, sessionsFile} {
+		if _, err := os.Stat(c.indexPath(name)); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func writeParquet[T any](path string, rows []T) error {
@@ -254,11 +263,11 @@ func FromRow(r TurnRow) query.Turn {
 	return t
 }
 
-func rollup(day time.Time, turns []query.Turn) (DayRow, []ModelRow, []ToolRow, []ProjectRow) {
+func rollup(day time.Time, turns []query.Turn) (DayRow, []ModelRow, []ToolRow, []ProjectRow, []SessionDayRow) {
 	key := day.Format("2006-01-02")
 	d := DayRow{Day: key}
 
-	sessions := map[string]bool{}
+	sessions := map[string]*SessionDayRow{}
 	byModel := map[string]*ModelRow{}
 	byTool := map[string]int64{}
 	byProject := map[string]*ProjectRow{}
@@ -266,7 +275,21 @@ func rollup(day time.Time, turns []query.Turn) (DayRow, []ModelRow, []ToolRow, [
 
 	for _, t := range turns {
 		d.Turns++
-		sessions[t.SessionID] = true
+		if sr := sessions[t.SessionID]; sr == nil {
+			ms := t.StartedAt.UTC().UnixMilli()
+			sessions[t.SessionID] = &SessionDayRow{
+				Day: key, SessionID: t.SessionID, Turns: 1, FirstTS: ms, LastTS: ms,
+			}
+		} else {
+			ms := t.StartedAt.UTC().UnixMilli()
+			sr.Turns++
+			if ms < sr.FirstTS {
+				sr.FirstTS = ms
+			}
+			if ms > sr.LastTS {
+				sr.LastTS = ms
+			}
+		}
 
 		write5m, write1h := t.Usage.CacheWrites()
 		d.InputTokens += int64(t.Usage.InputTokens)
@@ -340,5 +363,11 @@ func rollup(day time.Time, turns []query.Turn) (DayRow, []ModelRow, []ToolRow, [
 	}
 	sort.Slice(projects, func(i, j int) bool { return projects[i].ProjectID < projects[j].ProjectID })
 
-	return d, models, tools, projects
+	sessionDays := make([]SessionDayRow, 0, len(sessions))
+	for _, sr := range sessions {
+		sessionDays = append(sessionDays, *sr)
+	}
+	sort.Slice(sessionDays, func(i, j int) bool { return sessionDays[i].SessionID < sessionDays[j].SessionID })
+
+	return d, models, tools, projects, sessionDays
 }

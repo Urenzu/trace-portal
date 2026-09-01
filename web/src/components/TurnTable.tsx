@@ -1,15 +1,24 @@
-import { useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 
 import { api, type Turn } from "../api";
 import { tokens, usd, clockTime, msOrUnknown, pct } from "../format";
+import { daySegments, dayLabel, idleLabel } from "./days";
+
+const COLUMNS = 12;
 
 /**
  * The per-turn table. It is also the accessible alternative to the timeline:
  * every value encoded by color in the chart is readable here as text, which is
  * what the light-mode contrast relief requires.
+ *
+ * Rows are strictly chronological and grouped under the day they happened on.
+ * Times alone are ambiguous in a session that was resumed: without the day
+ * heading, a morning turn after a late-night one reads as a sorting bug.
  */
 export function TurnTable({ turns }: { turns: Turn[] }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const segments = useMemo(() => daySegments(turns), [turns]);
+  const multiDay = segments.length > 1;
 
   return (
     <div className="table-wrap">
@@ -31,89 +40,110 @@ export function TurnTable({ turns }: { turns: Turn[] }) {
           </tr>
         </thead>
         <tbody>
-          {turns.map((turn) => {
-            const u = turn.usage;
-            const totalInput =
-              u.cache_read_input_tokens +
-              u.cache_creation_input_tokens +
-              u.input_tokens;
-            const hit =
-              totalInput > 0 ? u.cache_read_input_tokens / totalInput : 0;
-            const open = expanded === turn.turn_id;
-
-            return (
-              <>
-                <tr
-                  key={turn.turn_id}
-                  className="clickable"
-                  onClick={() => setExpanded(open ? null : turn.turn_id)}
-                >
-                  <td className="num">{clockTime(turn.started_at)}</td>
-                  <td className="muted">{turn.model || "—"}</td>
-                  <td className="right num">
-                    {tokens(u.cache_read_input_tokens)}
-                  </td>
-                  <td className="right num">
-                    {tokens(u.cache_creation_input_tokens)}
-                  </td>
-                  <td className="right num">{tokens(u.input_tokens)}</td>
-                  <td className="right num">{tokens(u.output_tokens)}</td>
-                  <td className="right num">{pct(hit)}</td>
-                  <td className="right num">
-                    {turn.priced ? usd(turn.cost_usd) : "—"}
-                  </td>
-                  <td className="right num muted">
-                    {msOrUnknown(turn.ttfb_ms)}
-                  </td>
-                  <td className="right num muted">
-                    {msOrUnknown(turn.duration_ms)}
-                  </td>
-                  <td>
-                    {turn.tool_calls?.length ? (
-                      turn.tool_calls.map((t) => (
-                        <span
-                          className="pill"
-                          key={t.id || t.name}
-                          style={{ marginRight: 4 }}
-                        >
-                          {t.name}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                  <td>
-                    {turn.error ? (
-                      /* Naming the failure matters: a rate limit and a server
-                         error call for completely different responses. */
-                      <span className="pill err" title={turn.error}>
-                        {turn.status_code ? `${turn.status_code} ` : ""}
-                        {turn.error}
+          {segments.map((segment) => (
+            <Fragment key={segment.key}>
+              {multiDay && (
+                <tr className="day-rule">
+                  <td colSpan={COLUMNS}>
+                    <span className="day-rule-date">{dayLabel(segment)}</span>
+                    {segment.gapMS > 0 && (
+                      <span className="day-rule-note">
+                        resumed after {idleLabel(segment.gapMS)} idle
                       </span>
-                    ) : turn.pending ? (
-                      <span className="pill">pending</span>
-                    ) : (
-                      <span className="muted">{turn.stop_reason || "—"}</span>
                     )}
+                    <span className="day-rule-note">
+                      {segment.turns.length}{" "}
+                      {segment.turns.length === 1 ? "turn" : "turns"}
+                    </span>
                   </td>
                 </tr>
-                {open && (
-                  <tr key={`${turn.turn_id}-detail`}>
-                    <td
-                      colSpan={12}
-                      style={{
-                        background: "var(--surface-2)",
-                        whiteSpace: "normal",
-                      }}
+              )}
+              {segment.turns.map((turn) => {
+                const u = turn.usage;
+                const totalInput =
+                  u.cache_read_input_tokens +
+                  u.cache_creation_input_tokens +
+                  u.input_tokens;
+                const hit =
+                  totalInput > 0 ? u.cache_read_input_tokens / totalInput : 0;
+                const open = expanded === turn.turn_id;
+
+                return (
+                  <Fragment key={turn.turn_id}>
+                    <tr
+                      className="clickable"
+                      onClick={() => setExpanded(open ? null : turn.turn_id)}
                     >
-                      <TurnDetail turn={turn} />
-                    </td>
-                  </tr>
-                )}
-              </>
-            );
-          })}
+                      <td className="num">{clockTime(turn.started_at)}</td>
+                      <td className="muted">{turn.model || "—"}</td>
+                      <td className="right num">
+                        {tokens(u.cache_read_input_tokens)}
+                      </td>
+                      <td className="right num">
+                        {tokens(u.cache_creation_input_tokens)}
+                      </td>
+                      <td className="right num">{tokens(u.input_tokens)}</td>
+                      <td className="right num">{tokens(u.output_tokens)}</td>
+                      <td className="right num">{pct(hit)}</td>
+                      <td className="right num">
+                        {turn.priced ? usd(turn.cost_usd) : "—"}
+                      </td>
+                      <td className="right num muted">
+                        {msOrUnknown(turn.ttfb_ms)}
+                      </td>
+                      <td className="right num muted">
+                        {msOrUnknown(turn.duration_ms)}
+                      </td>
+                      <td>
+                        {turn.tool_calls?.length ? (
+                          turn.tool_calls.map((t) => (
+                            <span
+                              className="pill"
+                              key={t.id || t.name}
+                              style={{ marginRight: 4 }}
+                            >
+                              {t.name}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
+                      <td>
+                        {turn.error ? (
+                          /* Naming the failure matters: a rate limit and a server
+                         error call for completely different responses. */
+                          <span className="pill err" title={turn.error}>
+                            {turn.status_code ? `${turn.status_code} ` : ""}
+                            {turn.error}
+                          </span>
+                        ) : turn.pending ? (
+                          <span className="pill">pending</span>
+                        ) : (
+                          <span className="muted">
+                            {turn.stop_reason || "—"}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr>
+                        <td
+                          colSpan={COLUMNS}
+                          style={{
+                            background: "var(--surface-2)",
+                            whiteSpace: "normal",
+                          }}
+                        >
+                          <TurnDetail turn={turn} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </Fragment>
+          ))}
         </tbody>
       </table>
     </div>

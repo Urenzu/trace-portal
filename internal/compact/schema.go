@@ -115,3 +115,20 @@ type ToolRow struct {
 	Tool  string `parquet:"tool,dict"`
 	Calls int64  `parquet:"calls"`
 }
+
+// SessionDayRow records which days a session touched, and how much of it fell
+// on each. A session is not contiguous: one resumed after an idle day has turns
+// on both sides of a gap, and without this index a reader walking days
+// backwards cannot tell "this session has ended" from "this session is paused".
+// Guessing that apart is what used to split one conversation into several
+// listed sessions and truncate its detail view at the first idle day.
+//
+// It is one row per session per day — tiny beside the turn data it indexes, and
+// dictionary-encoded on both key columns.
+type SessionDayRow struct {
+	Day       string `parquet:"day,dict"`
+	SessionID string `parquet:"session_id,dict"`
+	Turns     int64  `parquet:"turns"`
+	FirstTS   int64  `parquet:"first_ts"` // unix milliseconds, UTC
+	LastTS    int64  `parquet:"last_ts"`
+}

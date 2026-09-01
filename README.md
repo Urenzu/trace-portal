@@ -97,9 +97,12 @@ is set, `/api/…` is the query API, and everything else is the UI.
   cache window can lapse, and the cache-write band that follows is the reload
   being paid for. That relationship is why the x-axis is time, not turn index.
   Long sessions group into at most 120 columns of equal time width, so the gaps
-  survive.
+  survive. A session resumed on a later day gets a dashed rule at the resume,
+  labelled with how long it idled.
 - **Turn table** — every value the chart encodes, as text, plus context
-  composition and stored payloads fetched on demand.
+  composition and stored payloads fetched on demand. Rows are oldest first and
+  grouped under the day they ran on, because a resumed session's clock times
+  otherwise read as a sorting fault.
 
 Colour choices were validated for colour-vision deficiency and for contrast
 against both the light and dark surfaces, and no value is ever encoded by
@@ -201,11 +204,18 @@ one row per day, so cost is O(days) and stays flat as history grows. The rollups
 live in a single file spanning every day, because opening one small file per day
 costs milliseconds each and that overhead dominates a wide window.
 
-Listing and lookup terminate early. A session's turns are contiguous in time, so
-listing walks days backwards and stops once the page is full, and a session is
-only emitted after a whole older day has been read without it — which is what
-keeps a paged list identical to an unpaged one, including sessions that span
-midnight.
+Listing and lookup terminate early. Listing walks days backwards and stops once
+the page is full, and a session is emitted only once no older day can still add
+to it — which is what keeps a paged list identical to an unpaged one.
+
+Knowing when that is true needs an index, because a session's turns are *not*
+contiguous. An agent CLI reuses the session id when a conversation is resumed,
+so one session routinely has turns either side of an idle day. A rollup of one
+row per session per day records the days each session actually touched, so a
+lookup reads only those days and a listing knows a paused session from a
+finished one. Inferring it instead — treating the first day without turns as the
+end — split one conversation into several listed sessions and truncated its
+detail at the newest fragment.
 
 Partitions are ordinary Parquet with no engine lock-in:
 
@@ -231,6 +241,14 @@ archive trustworthy, each covered by a test:
   unchanged.
 - **Compaction resolves duplicates permanently**, so the durable form never
   carries them forward.
+
+### What counts as a session
+
+Whatever the agent says it is. Claude Code keeps one session id across a resume,
+so a session is a conversation rather than a sitting, and a long one spans days
+with nights in the middle of it. The UI says so — a resume marker on the
+timeline, a day heading in the turn table — rather than presenting a four-day
+conversation as four hours of work with an odd duration.
 
 ### What counts as a project
 

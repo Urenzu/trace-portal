@@ -8,13 +8,13 @@ import (
 	"time"
 )
 
-// The consolidated index holds every day's rollup in three files rather than
-// three files per day. Per-day partitions stay the source of truth — a
+// The consolidated index holds every day's rollups in one set of files rather
+// than one set per day. Per-day partitions stay the source of truth — a
 // partition is self-contained and can be rebuilt or copied on its own — but
 // answering a wide window from them means one cold file open per day, and cold
 // opens cost milliseconds each. A year of history is 365 rollup rows; keeping
-// them together turns a full-history dashboard query into three file opens
-// total, independent of how much history exists.
+// them together turns a full-history dashboard query into a fixed handful of
+// file opens, independent of how much history exists.
 const indexDir = "rollup"
 
 func (c *Compactor) indexPath(name string) string {
@@ -34,6 +34,7 @@ func (c *Compactor) RebuildIndex() error {
 		models   []ModelRow
 		tools    []ToolRow
 		projects []ProjectRow
+		sessions []SessionDayRow
 	)
 	for _, e := range entries {
 		if !e.IsDir() || e.Name() == indexDir {
@@ -66,6 +67,12 @@ func (c *Compactor) RebuildIndex() error {
 			return err
 		}
 		projects = append(projects, pj...)
+
+		sd, err := c.ReadSessionDays(day)
+		if err != nil {
+			return err
+		}
+		sessions = append(sessions, sd...)
 	}
 
 	sort.Slice(days, func(i, j int) bool { return days[i].Day < days[j].Day })
@@ -80,6 +87,13 @@ func (c *Compactor) RebuildIndex() error {
 			return tools[i].Day < tools[j].Day
 		}
 		return tools[i].Tool < tools[j].Tool
+	})
+
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].SessionID != sessions[j].SessionID {
+			return sessions[i].SessionID < sessions[j].SessionID
+		}
+		return sessions[i].Day < sessions[j].Day
 	})
 
 	tmp, err := os.MkdirTemp(c.root, ".tmpidx-*")
@@ -98,6 +112,9 @@ func (c *Compactor) RebuildIndex() error {
 		return err
 	}
 	if err := writeParquet(filepath.Join(tmp, projectsFile), projects); err != nil {
+		return err
+	}
+	if err := writeParquet(filepath.Join(tmp, sessionsFile), sessions); err != nil {
 		return err
 	}
 
@@ -127,10 +144,14 @@ type index struct {
 	models   map[string][]ModelRow
 	tools    map[string][]ToolRow
 	projects map[string][]ProjectRow
+	// sessionDays maps a session to the days it touched, oldest first. A
+	// session may skip days entirely, which is why the days it did touch have
+	// to be recorded rather than inferred from its first and last turn.
+	sessionDays map[string][]time.Time
 }
 
-// loadIndex reads the consolidated rollup in three file opens, regardless of
-// how many days it covers. A missing index is not an error: callers fall back
+// loadIndex reads the consolidated rollup in a fixed number of file opens,
+// regardless of how many days it covers. A missing index is not an error: callers fall back
 // to per-day partitions.
 func (c *Compactor) loadIndex() (*index, error) {
 	days, err := readOrMissing[DayRow](c.indexPath(dayFile))
@@ -152,12 +173,17 @@ func (c *Compactor) loadIndex() (*index, error) {
 	if err != nil {
 		return nil, err
 	}
+	sessions, err := readOrMissing[SessionDayRow](c.indexPath(sessionsFile))
+	if err != nil {
+		return nil, err
+	}
 
 	idx := &index{
-		days:     make(map[string]DayRow, len(days)),
-		models:   make(map[string][]ModelRow),
-		tools:    make(map[string][]ToolRow),
-		projects: make(map[string][]ProjectRow),
+		days:        make(map[string]DayRow, len(days)),
+		models:      make(map[string][]ModelRow),
+		tools:       make(map[string][]ToolRow),
+		projects:    make(map[string][]ProjectRow),
+		sessionDays: make(map[string][]time.Time),
 	}
 	for _, d := range days {
 		idx.days[d.Day] = d
@@ -171,7 +197,49 @@ func (c *Compactor) loadIndex() (*index, error) {
 	for _, p := range projects {
 		idx.projects[p.Day] = append(idx.projects[p.Day], p)
 	}
+	for _, sd := range sessions {
+		day, err := time.ParseInLocation("2006-01-02", sd.Day, time.UTC)
+		if err != nil {
+			continue
+		}
+		idx.sessionDays[sd.SessionID] = append(idx.sessionDays[sd.SessionID], day)
+	}
+	for id, days := range idx.sessionDays {
+		sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
+		idx.sessionDays[id] = days
+	}
 	return idx, nil
+}
+
+// daysFor returns the compacted days a session touched, oldest first, and
+// whether the index knows the session at all.
+func (i *index) daysFor(id string) ([]time.Time, bool) {
+	if i == nil {
+		return nil, false
+	}
+	days, ok := i.sessionDays[id]
+	return days, ok
+}
+
+// oldestDay is the earliest compacted day a session touched. It is what tells a
+// backwards scan that a session cannot gain any more turns, without assuming
+// its days are contiguous.
+func (i *index) oldestDay(id string) (time.Time, bool) {
+	days, ok := i.daysFor(id)
+	if !ok || len(days) == 0 {
+		return time.Time{}, false
+	}
+	return days[0], true
+}
+
+// covers reports whether the index has a rollup for a day. A day compacted
+// after the last rebuild is not covered, and must not be treated as empty.
+func (i *index) covers(day time.Time) bool {
+	if i == nil {
+		return false
+	}
+	_, ok := i.days[day.UTC().Format("2006-01-02")]
+	return ok
 }
 
 // add folds one day of the consolidated index into agg, reporting whether that

@@ -4,6 +4,7 @@ import { scaleLinear, scaleTime } from "d3-scale";
 import type { Turn } from "../api";
 import { tokens, usd, clockTime, msOrUnknown, pct } from "../format";
 import { Tooltip } from "./Tooltip";
+import { daySegments, dayLabel, idleLabel } from "./days";
 import {
   bucketTurns,
   bucketHitRate,
@@ -67,6 +68,12 @@ export function SessionTimeline({ turns, onSelect, selectedTurnId }: Props) {
   const aggregated = turns.length > BUCKET_THRESHOLD;
 
   const buckets = useMemo(() => bucketTurns(turns), [turns]);
+
+  // A resumed session is one session with an idle night in the middle of it.
+  // The x-axis is time, so that night is drawn to scale and the turns either
+  // side of it would otherwise read as one continuous run of work.
+  const segments = useMemo(() => daySegments(turns), [turns]);
+  const resumes = segments.slice(1);
 
   const { xScale, yScale, barWidth, yTicks, xTicks } = useMemo(() => {
     const times = buckets.map((b) => b.at.getTime());
@@ -157,9 +164,35 @@ export function SessionTimeline({ turns, onSelect, selectedTurnId }: Props) {
                 y={plotHeight + 18}
                 textAnchor="middle"
               >
-                {clockTime(tick.toISOString())}
+                {/* A bare clock time is ambiguous once the session crosses a
+                    day, and the axis is the only thing that says which day a
+                    column belongs to. */}
+                {resumes.length > 0
+                  ? shortDate(tick)
+                  : clockTime(tick.toISOString())}
               </text>
             ))}
+
+            {resumes.map((segment) => {
+              const at = xScale(segment.from);
+              // A resume late in the session sits near the right edge, where a
+              // label reading rightwards is clipped by the viewBox. Flip it to
+              // the inside rather than letting it run off.
+              const flip = at > plotWidth - 96;
+              return (
+                <g key={segment.key} className="day-break">
+                  <line x1={at} x2={at} y1={-4} y2={plotHeight} />
+                  <text
+                    className="axis-label"
+                    x={flip ? at - 4 : at + 4}
+                    y={4}
+                    textAnchor={flip ? "end" : "start"}
+                  >
+                    {dayLabel(segment)} · +{idleLabel(segment.gapMS)}
+                  </text>
+                </g>
+              );
+            })}
 
             {buckets.map((bucket) => {
               const cx = xScale(bucket.at);
@@ -260,19 +293,42 @@ export function SessionTimeline({ turns, onSelect, selectedTurnId }: Props) {
         </svg>
       </div>
 
-      {hover && <BucketTooltip bucket={hover.bucket} x={hover.x} y={hover.y} />}
+      {hover && (
+        <BucketTooltip
+          bucket={hover.bucket}
+          x={hover.x}
+          y={hover.y}
+          withDate={resumes.length > 0}
+        />
+      )}
     </>
   );
+}
+
+function stamp(at: Date, withDate: boolean): string {
+  return withDate ? shortDate(at) : clockTime(at.toISOString());
+}
+
+/** Day and time together, for an axis that spans more than one day. */
+function shortDate(at: Date): string {
+  return at.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function BucketTooltip({
   bucket,
   x,
   y,
+  withDate,
 }: {
   bucket: Bucket;
   x: number;
   y: number;
+  withDate: boolean;
 }) {
   const grouped = bucket.turns.length > 1;
   const turn = bucket.turns[0];
@@ -305,8 +361,8 @@ function BucketTooltip({
       y={y}
       title={
         grouped
-          ? `${clockTime(bucket.from.toISOString())} – ${clockTime(bucket.to.toISOString())}`
-          : clockTime(bucket.at.toISOString())
+          ? `${stamp(bucket.from, withDate)} – ${stamp(bucket.to, withDate)}`
+          : stamp(bucket.at, withDate)
       }
       subtitle={
         grouped

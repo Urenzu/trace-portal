@@ -68,3 +68,64 @@ func readOrMissing[T any](path string) ([]T, error) {
 	}
 	return rows, nil
 }
+
+// sessionProbe is the narrowest useful projection of TurnRow: which session a
+// turn belongs to and when it happened. Both columns are dictionary- or
+// delta-encoded, so probing a day for a session costs a fraction of reading it.
+//
+// Field names and tags must match TurnRow exactly; columns are matched by name.
+type sessionProbe struct {
+	TS        int64  `parquet:"ts,delta"`
+	SessionID string `parquet:"session_id,dict"`
+}
+
+// ReadSessionDays returns which sessions touched a compacted day.
+//
+// Partitions written before this index existed carry no by_session.parquet, so
+// the rows are derived from the day's turns instead. That keeps an archive
+// built by an older build correct without forcing a recompaction, at the cost
+// of reading two columns rather than a prepared rollup.
+func (c *Compactor) ReadSessionDays(day time.Time) ([]SessionDayRow, error) {
+	rows, err := readOrMissing[SessionDayRow](filepath.Join(c.PartitionDir(day), sessionsFile))
+	if err != nil {
+		return nil, err
+	}
+	if rows != nil {
+		return rows, nil
+	}
+
+	probes, err := readOrMissing[sessionProbe](filepath.Join(c.PartitionDir(day), turnsFile))
+	if err != nil || probes == nil {
+		return nil, err
+	}
+	return sessionDaysFromProbes(day, probes), nil
+}
+
+func sessionDaysFromProbes(day time.Time, probes []sessionProbe) []SessionDayRow {
+	key := day.UTC().Format("2006-01-02")
+	byID := map[string]*SessionDayRow{}
+	order := make([]string, 0, 8)
+	for _, p := range probes {
+		row := byID[p.SessionID]
+		if row == nil {
+			byID[p.SessionID] = &SessionDayRow{
+				Day: key, SessionID: p.SessionID, Turns: 1, FirstTS: p.TS, LastTS: p.TS,
+			}
+			order = append(order, p.SessionID)
+			continue
+		}
+		row.Turns++
+		if p.TS < row.FirstTS {
+			row.FirstTS = p.TS
+		}
+		if p.TS > row.LastTS {
+			row.LastTS = p.TS
+		}
+	}
+
+	out := make([]SessionDayRow, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	return out
+}

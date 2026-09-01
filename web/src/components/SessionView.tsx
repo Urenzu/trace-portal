@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { api, type SessionDetail, type Turn } from "../api";
 import { tokens, usd, pct, dateTime, duration } from "../format";
+import { daySegments, idleLabel } from "./days";
 import { SessionTimeline } from "./SessionTimeline";
 import { TurnTable } from "./TurnTable";
 import { CardHead } from "./ui";
@@ -66,6 +67,9 @@ export function SessionView({ id, days, onBack }: Props) {
   }
   if (!detail) return <div className="empty">Loading session…</div>;
 
+  // A resumed session's wall-clock span counts the nights it was not running,
+  // so the day breakdown is what makes that duration mean anything.
+  const segments = daySegments(detail.turn_list);
   const u = detail.usage;
   const totalInput =
     u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens;
@@ -84,6 +88,22 @@ export function SessionView({ id, days, onBack }: Props) {
           ← All sessions
         </button>
         <span className="mono muted">{detail.id}</span>
+        {segments.length > 1 && (
+          <span
+            className="pill"
+            title={segments
+              .map(
+                (seg, i) =>
+                  `${seg.from.toLocaleDateString()}: ${seg.turns.length} turns` +
+                  (i > 0
+                    ? ` (resumed after ${idleLabel(seg.gapMS)} idle)`
+                    : ""),
+              )
+              .join("\n")}
+          >
+            resumed across {segments.length} days
+          </span>
+        )}
         {widened && (
           <span
             className="pill"
@@ -112,7 +132,11 @@ export function SessionView({ id, days, onBack }: Props) {
           <div className="tile-value num">
             {duration(detail.started_at, detail.ended_at)}
           </div>
-          <div className="tile-note">from {dateTime(detail.started_at)}</div>
+          <div className="tile-note">
+            {segments.length > 1
+              ? `across ${segments.length} days, from ${dateTime(detail.started_at)}`
+              : `from ${dateTime(detail.started_at)}`}
+          </div>
         </div>
         <div className="tile">
           <div className="tile-label">Tool calls</div>
@@ -140,6 +164,8 @@ export function SessionView({ id, days, onBack }: Props) {
           its tokens were billed. Wide gaps between bars are where a five-minute
           cache window can lapse — the orange that follows is the reload being
           paid for.
+          {segments.length > 1 &&
+            " Dashed rules mark where the session was resumed on a later day."}
         </p>
         <div className="card-body" />
         <SessionTimeline
@@ -154,7 +180,8 @@ export function SessionView({ id, days, onBack }: Props) {
       <div className="card">
         <CardHead title="Turns" />
         <p className="card-sub">
-          Select a row to see context composition and stored payloads.
+          Oldest first. Select a row to see context composition and stored
+          payloads.
         </p>
         <div className="card-body">
           <TurnTable turns={detail.turn_list} />

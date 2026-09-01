@@ -774,3 +774,114 @@ func TestCompactedTurnKeepsProjectWithoutThePath(t *testing.T) {
 		t.Errorf("absolute path leaked into the archive: %v", leaked)
 	}
 }
+
+// resumedSessionEvents builds one session whose turns land on the given days
+// with idle days in between — the shape of a conversation picked back up the
+// next morning, or the following week.
+func resumedSessionEvents(id string, days []time.Time) []trace.Event {
+	var events []trace.Event
+	for i, day := range days {
+		ts := day.Add(9 * time.Hour)
+		turn := fmt.Sprintf("t%d", i)
+		events = append(events,
+			trace.Event{Type: trace.EventRequest, Timestamp: ts,
+				SessionID: id, TurnID: turn, Model: "claude-opus-5"},
+			trace.Event{Type: trace.EventResponse, Timestamp: ts.Add(time.Second),
+				SessionID: id, TurnID: turn, Model: "claude-opus-5",
+				StatusCode: 200, DurationMS: 1000, Usage: &trace.Usage{InputTokens: 100}},
+		)
+	}
+	return events
+}
+
+// A session resumed after an idle day is one session, not several. Walking days
+// backwards used to treat the first day without turns as the session's end,
+// which listed the same conversation once per stretch of activity.
+func TestSessionsPageKeepsResumedSessionWhole(t *testing.T) {
+	today := truncateDay(time.Now().UTC())
+	days := []time.Time{
+		today.AddDate(0, 0, -6),
+		today.AddDate(0, 0, -4),
+		today.AddDate(0, 0, -1),
+	}
+
+	c, _ := newCompactor(t, resumedSessionEvents("resumed", days)...)
+	if _, err := c.CompactAll(); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+
+	page, err := c.SessionsPage(today.AddDate(0, 0, -7), today, 50, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Sessions) != 1 {
+		t.Fatalf("got %d rows for one resumed session: %+v", len(page.Sessions), page.Sessions)
+	}
+	if page.Sessions[0].Turns != len(days) {
+		t.Errorf("turns = %d, want %d", page.Sessions[0].Turns, len(days))
+	}
+}
+
+// The detail view must carry every day of a resumed session, in time order.
+// Truncating at the first idle day made a long session look short and cheap.
+func TestSessionDetailSpansIdleDays(t *testing.T) {
+	today := truncateDay(time.Now().UTC())
+	days := []time.Time{
+		today.AddDate(0, 0, -6),
+		today.AddDate(0, 0, -4),
+		today.AddDate(0, 0, -1),
+	}
+
+	c, _ := newCompactor(t, resumedSessionEvents("resumed", days)...)
+	if _, err := c.CompactAll(); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+
+	detail, ok, err := c.SessionDetail(today.AddDate(0, 0, -7), today, "resumed")
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if len(detail.TurnList) != len(days) {
+		t.Fatalf("got %d turns, want %d across idle days", len(detail.TurnList), len(days))
+	}
+	for i, turn := range detail.TurnList {
+		if i > 0 && turn.StartedAt.Before(detail.TurnList[i-1].StartedAt) {
+			t.Fatalf("turn %d starts before its predecessor: %s < %s",
+				i, turn.StartedAt, detail.TurnList[i-1].StartedAt)
+		}
+		if got := truncateDay(turn.StartedAt); !got.Equal(days[i]) {
+			t.Errorf("turn %d on %s, want %s", i, got.Format("2006-01-02"), days[i].Format("2006-01-02"))
+		}
+	}
+}
+
+// An archive compacted before the session-day index existed must still read
+// correctly: the index is derived from the turns already on disk.
+func TestSessionDayIndexDerivedFromOlderPartitions(t *testing.T) {
+	today := truncateDay(time.Now().UTC())
+	days := []time.Time{today.AddDate(0, 0, -5), today.AddDate(0, 0, -2)}
+
+	c, _ := newCompactor(t, resumedSessionEvents("resumed", days)...)
+	if _, err := c.CompactAll(); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+
+	// Take the prepared rollups away, leaving only turns.parquet, as an older
+	// build would have written.
+	for _, day := range days {
+		if err := os.Remove(filepath.Join(c.PartitionDir(day), sessionsFile)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.RebuildIndex(); err != nil {
+		t.Fatalf("rebuild index: %v", err)
+	}
+
+	detail, ok, err := c.SessionDetail(today.AddDate(0, 0, -7), today, "resumed")
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if len(detail.TurnList) != len(days) {
+		t.Errorf("got %d turns, want %d", len(detail.TurnList), len(days))
+	}
+}
