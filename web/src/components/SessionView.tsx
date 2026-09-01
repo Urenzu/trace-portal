@@ -180,8 +180,8 @@ export function SessionView({ id, days, onBack }: Props) {
       <div className="card">
         <CardHead title="Turns" />
         <p className="card-sub">
-          Oldest first. Select a row to see context composition and stored
-          payloads.
+          Newest first — scrolling down moves backwards in time. Select a row to
+          see context composition and stored payloads.
         </p>
         <div className="card-body">
           <TurnTable turns={detail.turn_list} />

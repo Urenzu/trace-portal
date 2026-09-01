@@ -421,32 +421,51 @@ tr.clickable {
 
 /* A session is resumed under the same id, so the turn table can cross a
    midnight. Clock times alone make that read as a sorting fault; the day
-   heading is what tells a reader the list is still in order. */
+   heading is what tells a reader the list is still in order.
+
+   Drawn as a rule rather than a filled band: it separates rows, and a block of
+   surface colour competes with the hover state on the rows themselves. */
 .day-rule td {
-  padding: 12px 10px 5px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-2);
-}
-
-.day-rule-date {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-  letter-spacing: 0.01em;
-}
-
-.day-rule-note {
-  margin-left: 10px;
-  font-size: 11.5px;
-  color: var(--text-muted);
+  padding: 20px 10px 7px;
+  border-bottom: 1px solid var(--border-strong);
+  white-space: normal;
 }
 
 tbody tr.day-rule:first-child td {
-  padding-top: 5px;
+  padding-top: 4px;
 }
 
-tr.clickable:hover td {
-  background: var(--surface-2);
+.day-rule-inner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.day-rule-date {
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--text-primary);
+}
+
+/* The idle span is the whole point of the marker: it is what separates "still
+   working" from "picked this up again days later". */
+.day-rule-gap {
+  font-size: 11px;
+  padding: 0 7px;
+  color: var(--text-muted);
+}
+
+.day-rule-meta {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.day-rule-dot {
+  margin: 0 6px;
+  opacity: 0.55;
 }
 
 /* --- misc --------------------------------------------------------------- */

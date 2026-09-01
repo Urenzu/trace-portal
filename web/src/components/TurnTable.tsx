@@ -11,13 +11,28 @@ const COLUMNS = 12;
  * every value encoded by color in the chart is readable here as text, which is
  * what the light-mode contrast relief requires.
  *
- * Rows are strictly chronological and grouped under the day they happened on.
- * Times alone are ambiguous in a session that was resumed: without the day
- * heading, a morning turn after a late-night one reads as a sorting bug.
+ * Newest first, and monotonically so: scrolling down always moves backwards in
+ * time, never forwards. Direction matters more than which end leads — a list
+ * that changes direction at a day boundary reads as a sorting fault, which is
+ * exactly what an unlabelled resumed session looked like.
+ *
+ * Rows are grouped under the day they ran on for the same reason. A session id
+ * survives a resume, so clock times alone cannot say that 12:14 came after
+ * 20:04 on the night before.
  */
 export function TurnTable({ turns }: { turns: Turn[] }) {
   const [expanded, setExpanded] = useState<string | null>(null);
-  const segments = useMemo(() => daySegments(turns), [turns]);
+  // Segments are built oldest first — the idle gap before a day is only
+  // knowable in that direction — then reversed for display.
+  const chronological = useMemo(() => daySegments(turns), [turns]);
+  const segments = useMemo(
+    () =>
+      [...chronological].reverse().map((segment) => ({
+        ...segment,
+        turns: [...segment.turns].reverse(),
+      })),
+    [chronological],
+  );
   const multiDay = segments.length > 1;
 
   return (
@@ -45,16 +60,25 @@ export function TurnTable({ turns }: { turns: Turn[] }) {
               {multiDay && (
                 <tr className="day-rule">
                   <td colSpan={COLUMNS}>
-                    <span className="day-rule-date">{dayLabel(segment)}</span>
-                    {segment.gapMS > 0 && (
-                      <span className="day-rule-note">
-                        resumed after {idleLabel(segment.gapMS)} idle
+                    <div className="day-rule-inner">
+                      <span className="day-rule-date">{dayLabel(segment)}</span>
+                      {segment.gapMS > 0 && (
+                        <span
+                          className="pill day-rule-gap"
+                          title={`The session sat idle for ${idleLabel(
+                            segment.gapMS,
+                          )} before this day`}
+                        >
+                          resumed after {idleLabel(segment.gapMS)}
+                        </span>
+                      )}
+                      <span className="day-rule-meta">
+                        {segment.turns.length.toLocaleString()}{" "}
+                        {segment.turns.length === 1 ? "turn" : "turns"}
+                        <span className="day-rule-dot">·</span>
+                        {usd(segment.costUSD)}
                       </span>
-                    )}
-                    <span className="day-rule-note">
-                      {segment.turns.length}{" "}
-                      {segment.turns.length === 1 ? "turn" : "turns"}
-                    </span>
+                    </div>
                   </td>
                 </tr>
               )}

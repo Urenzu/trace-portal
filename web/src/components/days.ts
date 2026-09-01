@@ -15,13 +15,12 @@ import type { Turn } from "../api";
 export interface DaySegment {
   /** Local calendar day, YYYY-MM-DD, usable as a React key. */
   key: string;
-  /** turn_id of the first turn on this day, which is where a rule is drawn. */
-  startsAtTurn: string;
   from: Date;
   to: Date;
   turns: Turn[];
   /** Idle time since the previous segment's last turn; 0 for the first. */
   gapMS: number;
+  costUSD: number;
 }
 
 function localDayKey(d: Date): string {
@@ -56,15 +55,16 @@ export function daySegments(turns: Turn[]): DaySegment[] {
     if (current && current.key === key) {
       current.turns.push(turn);
       current.to = at;
+      current.costUSD += turn.cost_usd;
       continue;
     }
     segments.push({
       key,
-      startsAtTurn: turn.turn_id,
       from: at,
       to: at,
       turns: [turn],
       gapMS: current ? at.getTime() - current.to.getTime() : 0,
+      costUSD: turn.cost_usd,
     });
   }
   return segments;
