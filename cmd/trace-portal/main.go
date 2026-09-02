@@ -72,6 +72,15 @@ func run(args []string) error {
 		enableProxy  = flag.Bool("proxy", false, "also accept proxied API traffic (only needed for tools that keep no local log)")
 		claudeDir    = flag.String("claude-dir", "", "Claude Code transcript directory (default ~/.claude/projects)")
 
+		// Content capture. On by default, and the default is the whole point:
+		// Claude Code prunes its transcripts after about a month, so a day this
+		// spends off is a day of prompts, tool arguments and tool outputs that
+		// no later build can recover. It stays on this machine -- the collector
+		// ships measurements, not text; see the forwarder.
+		captureContent = flag.Bool("content", true, "capture prompts, tool inputs and tool outputs alongside the measurements")
+		maxContent     = flag.Int("max-content", source.DefaultMaxContent, "bytes kept per captured block")
+		recapture      = flag.Bool("recapture", false, "re-read transcripts already consumed, to capture content from them before the source prunes them")
+
 		// Sign-in. Absent, this is the single-user local tool it has always
 		// been: no accounts, no cookies, no sign-in button. Present, the same
 		// binary serves both flows. Nothing in between — a half-configured
@@ -195,15 +204,19 @@ func run(args []string) error {
 	// Tailing agent logs is the default way traces are collected: it reads what
 	// the tools already write, so nothing sits in an agent's request path and
 	// a failure here can never stop an agent from working.
-	sources := []source.Source{
-		source.NewClaudeCode(*claudeDir),
-	}
+	claudeCode := source.NewClaudeCode(*claudeDir)
+	claudeCode.CaptureContent(*captureContent, *maxContent)
+	sources := []source.Source{claudeCode}
 	for _, src := range sources {
 		if files, err := src.Files(); err == nil && len(files) > 0 {
 			log.Info("watching agent logs", "source", src.Name(), "files", len(files), "dir", src.Root())
 		}
 	}
+	if *captureContent {
+		log.Info("capturing content", "max_block_bytes", *maxContent, "shipped", false)
+	}
 	ingester := ingest.New(st, *dataDir, log, sources...)
+	ingester.Recapture(*captureContent, *recapture)
 	// Persist offsets and coverage on the way out, so a clean shutdown keeps
 	// what this run learned.
 	defer ingester.Close()
@@ -283,7 +296,14 @@ func run(args []string) error {
 	if receiving != nil {
 		registries = append(registries, receiving)
 	}
-	go runCompaction(ctx, registries, *compactEvery, log)
+	// A re-read has to be followed by a rebuild, and cannot overlap with one:
+	// a partition rebuilt halfway through the re-read would be rebuilt without
+	// the rest. Ordinary startup waits for nothing.
+	var afterBackfill <-chan struct{}
+	if *recapture {
+		afterBackfill = ingester.Backfilled()
+	}
+	go runCompaction(ctx, registries, *compactEvery, log, afterBackfill)
 
 	go func() {
 		defer func() {
@@ -420,10 +440,20 @@ func route(proxyHandler, apiHandler, uiHandler, authHandler http.Handler, proxyE
 // then on a ticker. Failures are logged and retried on the next tick rather
 // than taken as fatal: the raw JSONL is still the source of truth, and the read
 // path falls back to it for any day without a partition.
-func runCompaction(ctx context.Context, registries []*tenant.Registry, every time.Duration, log *slog.Logger) {
+func runCompaction(ctx context.Context, registries []*tenant.Registry, every time.Duration, log *slog.Logger, after <-chan struct{}) {
 	if every <= 0 {
 		log.Info("compaction disabled")
 		return
+	}
+
+	// rebuild is set for the first sweep after a re-read, and only that one.
+	rebuild := after != nil
+	if after != nil {
+		select {
+		case <-after:
+		case <-ctx.Done():
+			return
+		}
 	}
 
 	defer func() {
@@ -442,7 +472,11 @@ func runCompaction(ctx context.Context, registries []*tenant.Registry, every tim
 			log.Warn("could not open tenant storage for compaction", "tenant", id, "err", err)
 			return
 		}
-		n, err := storage.Compactor.CompactAll()
+		compact := storage.Compactor.CompactAll
+		if rebuild {
+			compact = storage.Compactor.RecompactAll
+		}
+		n, err := compact()
 		if err != nil {
 			log.Warn("compaction failed", "tenant", id, "err", err)
 			return
@@ -466,6 +500,10 @@ func runCompaction(ctx context.Context, registries []*tenant.Registry, every tim
 	}
 
 	run()
+	if rebuild {
+		log.Info("rebuilt every partition after re-reading transcripts")
+		rebuild = false
+	}
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {

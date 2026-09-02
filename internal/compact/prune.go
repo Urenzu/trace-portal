@@ -82,14 +82,32 @@ func (c *Compactor) pruneDay(day time.Time) error {
 	if err != nil {
 		return fmt.Errorf("re-read %s from the hot window: %w", partitionKey(day), err)
 	}
-	if want := len(query.BuildTurns(events)); len(turns) != want {
+	want := query.BuildTurns(events)
+	if len(turns) != len(want) {
 		// The two disagree, so one of them is wrong and there is no way to tell
 		// which. Refusing costs storage; guessing costs turns.
 		return fmt.Errorf("partition for %s holds %d turns, the hot window holds %d; not dropping",
-			partitionKey(day), len(turns), want)
+			partitionKey(day), len(turns), len(want))
+	}
+	// Content is checked separately, because it is the one thing the window can
+	// hold that a partition written earlier does not: re-reading transcripts to
+	// capture content adds no turns at all, so a turn count alone would report
+	// the two as identical and the drop would delete the only copy.
+	if got, expect := contentRefs(turns), contentRefs(want); got != expect {
+		return fmt.Errorf("partition for %s holds %d content records, the hot window holds %d; not dropping",
+			partitionKey(day), got, expect)
 	}
 
 	return dropper.DropDay(storeContext(), day)
+}
+
+// contentRefs counts the captured content a set of turns points at.
+func contentRefs(turns []query.Turn) int {
+	n := 0
+	for _, t := range turns {
+		n += len(t.ContentBlobs)
+	}
+	return n
 }
 
 // Days lists every day the archive holds, from the partitions and from the hot

@@ -49,6 +49,14 @@ type Turn struct {
 	RequestBlob  string `json:"request_blob,omitempty"`
 	ResponseBlob string `json:"response_blob,omitempty"`
 
+	// ContentBlobs reference what was actually said and done in this turn, in
+	// the order it was captured: the assistant's text and thinking, each tool
+	// call's arguments, and each result. A list rather than one document
+	// because the source writes them one at a time -- and because a tool result
+	// arrives after the turn it belongs to has already been recorded, so no
+	// single payload could ever have been assembled in one pass.
+	ContentBlobs []string `json:"content_blobs,omitempty"`
+
 	Error string `json:"error,omitempty"`
 	// Pending is true when a request was recorded but no response or error
 	// followed — an in-flight turn, or one lost to a crash.
@@ -122,7 +130,17 @@ func BuildTurns(events []trace.Event) []Turn {
 	byTurn := make(map[string]*Turn, len(events))
 	order := make([]string, 0, len(events))
 
+	// Tool results are held back for a second pass. A result names the call it
+	// answers and nothing else -- it has no message id, because the API never
+	// issued one for it -- so it can only be placed once every turn's tool
+	// calls are known. Ordinary events are unaffected; this costs one map.
+	var results []trace.Event
+
 	for _, ev := range events {
+		if ev.Type == trace.EventContent && ev.ContentKind == trace.ContentToolResult {
+			results = append(results, ev)
+			continue
+		}
 		key := turnKey(ev)
 		t, seen := byTurn[key]
 		if !seen {
@@ -132,6 +150,8 @@ func BuildTurns(events []trace.Event) []Turn {
 		}
 		applyEvent(t, ev)
 	}
+
+	attachResults(byTurn, results)
 
 	turns := make([]Turn, 0, len(order))
 	for _, id := range order {
@@ -149,6 +169,32 @@ func BuildTurns(events []trace.Event) []Turn {
 // preferred because it is assigned upstream and every observer sees the same
 // value; the proxy's locally generated TurnID is the fallback for events
 // recorded before a message id was known, such as a request or a failure.
+// attachResults files each tool result under the turn that made the call.
+//
+// A result whose call is not in this window is dropped rather than given a turn
+// of its own. That happens across a day boundary -- a tool that ran at 23:59
+// and returned at 00:01 -- and inventing a turn for it would put a row in the
+// dashboard with no model, no tokens and no cost, which reads as a broken turn
+// rather than as a late result.
+func attachResults(byTurn map[string]*Turn, results []trace.Event) {
+	if len(results) == 0 {
+		return
+	}
+	owner := map[string]*Turn{}
+	for _, t := range byTurn {
+		for _, call := range t.ToolCalls {
+			if call.ID != "" {
+				owner[call.ID] = t
+			}
+		}
+	}
+	for _, ev := range results {
+		if t := owner[ev.ToolUseID]; t != nil && ev.ContentBlob != "" {
+			t.ContentBlobs = append(t.ContentBlobs, ev.ContentBlob)
+		}
+	}
+}
+
 func turnKey(ev trace.Event) string {
 	if ev.MessageID != "" {
 		return "msg:" + ev.MessageID
@@ -212,9 +258,7 @@ func applyEvent(t *Turn, ev trace.Event) {
 		if ev.TTFBMS != 0 {
 			t.TTFBMS = ev.TTFBMS
 		}
-		if len(ev.ToolCalls) > 0 {
-			t.ToolCalls = ev.ToolCalls
-		}
+		mergeToolCalls(t, ev.ToolCalls)
 		if ev.Usage != nil {
 			t.Usage = *ev.Usage
 		}
@@ -227,12 +271,44 @@ func applyEvent(t *Turn, ev trace.Event) {
 			t.StartedAt = ev.Timestamp
 		}
 
+	case trace.EventContent:
+		if ev.ContentBlob != "" {
+			t.ContentBlobs = append(t.ContentBlobs, ev.ContentBlob)
+		}
+
 	case trace.EventError:
 		t.Pending = false
 		t.Error = ev.Error
 		t.DurationMS = ev.DurationMS
 		if t.StartedAt.IsZero() {
 			t.StartedAt = ev.Timestamp
+		}
+	}
+}
+
+// mergeToolCalls adds calls the turn does not already hold.
+//
+// Append rather than assign, because one turn arrives as several events: Claude
+// Code writes one transcript record per content block, so a turn that thought,
+// spoke and then called a tool is three records sharing one message id.
+// Assigning would keep whichever arrived last and silently lose the rest, and
+// the same is true when a second source observes the same call.
+func mergeToolCalls(t *Turn, calls []trace.ToolCall) {
+	for _, call := range calls {
+		known := false
+		for i, have := range t.ToolCalls {
+			if have.ID == call.ID && have.ID != "" {
+				// Fill in what the earlier observation lacked; a call seen
+				// twice is one call.
+				if t.ToolCalls[i].Name == "" {
+					t.ToolCalls[i].Name = call.Name
+				}
+				known = true
+				break
+			}
+		}
+		if !known {
+			t.ToolCalls = append(t.ToolCalls, call)
 		}
 	}
 }

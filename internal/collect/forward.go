@@ -165,9 +165,14 @@ func (f *Forwarder) Pass(ctx context.Context) (int, error) {
 
 	pending := events[:0:0]
 	for _, ev := range events {
-		if !already[forwardKey(ev)] {
-			pending = append(pending, ev)
+		if already[forwardKey(ev)] {
+			continue
 		}
+		if ev.Type == trace.EventContent {
+			// See dropped content, below.
+			continue
+		}
+		pending = append(pending, ev)
 	}
 	if len(pending) == 0 {
 		return 0, nil
@@ -195,6 +200,21 @@ func (f *Forwarder) Pass(ctx context.Context) (int, error) {
 	}
 	return res.Accepted, nil
 }
+
+// Content stays on the machine that captured it, so content events are not
+// shipped at all.
+//
+// The package comment states the privacy contract plainly -- what crosses the
+// wire is already-narrow measurements, and the redaction happens before the
+// request rather than after it -- and captured content is somebody's prompts
+// and somebody's source code, which is the exact thing that contract exists to
+// keep local. Shipping it is a product decision with a consent story attached,
+// not a flag, so there is deliberately no way to turn this off here.
+//
+// Dropping the whole event rather than blanking its reference: a content event
+// with no payload says only that a block existed, which the turn's own tool
+// calls already say, and a blob reference whose blob was never sent is a link
+// the server would render and then fail to open.
 
 // forwardKey identifies one record for the purpose of "have I sent this".
 //

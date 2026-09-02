@@ -3,7 +3,10 @@
 // (compaction, query API, UI), so keep this struct narrow and additive.
 package trace
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // EventType distinguishes the records that appear in the JSONL stream.
 type EventType string
@@ -15,6 +18,13 @@ const (
 	EventResponse EventType = "response"
 	// EventError is written when the upstream call could not be completed.
 	EventError EventType = "error"
+	// EventContent carries one piece of what was actually said or done: an
+	// assistant text or thinking block, a tool call's arguments, or the result
+	// a tool returned. It is separate from the response event because the
+	// source writes them separately -- Claude Code emits one transcript record
+	// per content block, and a tool's result arrives later, in a record of its
+	// own.
+	EventContent EventType = "content"
 )
 
 // CacheCreation breaks cache writes down by TTL. The two tiers are billed
@@ -81,6 +91,54 @@ func (u Usage) Total() int {
 type ToolCall struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+// ContentKind labels what a captured content record holds. It is stored inside
+// the payload rather than on the event so the event stays the same width
+// whatever was captured.
+type ContentKind string
+
+const (
+	ContentText       ContentKind = "text"
+	ContentThinking   ContentKind = "thinking"
+	ContentToolUse    ContentKind = "tool_use"
+	ContentToolResult ContentKind = "tool_result"
+)
+
+// Content is one captured piece of a turn, stored as a blob.
+//
+// The blob rather than the event is where this goes, and that is the whole
+// reason content capture does not cost anything analytical. An event row stays
+// a fixed handful of numbers no matter how large a file a tool read; the text
+// sits behind a content hash, is fetched only when somebody opens a turn, and
+// dedups across every turn that saw the same bytes -- which for a tool that
+// reads the same file forty times is most of them.
+type Content struct {
+	Kind ContentKind `json:"kind"`
+
+	// Tool is the call this belongs to, for tool_use and tool_result. It is the
+	// API's tool_use id, which both records carry, so a result is paired with
+	// its call without either side needing to know the other's position.
+	Tool string `json:"tool,omitempty"`
+	Name string `json:"name,omitempty"`
+
+	// Text is the block's text, or a tool result rendered as text.
+	Text string `json:"text,omitempty"`
+
+	// Input is a tool call's arguments, kept as raw JSON so a schema this build
+	// has never seen survives intact.
+	Input json.RawMessage `json:"input,omitempty"`
+
+	// IsError marks a tool result the agent was told had failed.
+	IsError bool `json:"is_error,omitempty"`
+
+	// Truncated is set when the captured text was cut at the capture limit.
+	// Recorded because a truncated tool output read as complete would be a
+	// confident wrong answer about what the agent saw.
+	Truncated bool `json:"truncated,omitempty"`
+
+	// Bytes is the original size before any truncation.
+	Bytes int `json:"bytes,omitempty"`
 }
 
 // Event is one append-only record. Request and response events for the same
@@ -162,4 +220,26 @@ type Event struct {
 
 	// Error carries the transport-level failure for EventError.
 	Error string `json:"error,omitempty"`
+
+	// ContentKind and ToolUseID are the parts of a content payload that have to
+	// be readable without fetching it: the turn builder pairs a tool result
+	// with the call it answers, and doing that from the blob would mean one
+	// object fetch per tool call in the window to answer a question about
+	// structure rather than about text.
+	ContentKind ContentKind `json:"content_kind,omitempty"`
+	ToolUseID   string      `json:"tool_use_id,omitempty"`
+
+	// ContentBlob references the Content payload this event carries, for
+	// EventContent. A reference rather than the text itself: the event stream
+	// is walked in full by every compaction and every fallback read, and
+	// inlining prompts would make the cost of counting turns scale with how
+	// much people typed.
+	ContentBlob string `json:"content_blob,omitempty"`
+
+	// Content is the payload on its way to the blob store, and is never
+	// serialised -- the ingester writes it and records the reference above.
+	// It exists because a parser reads bytes and has no store, and passing the
+	// store into every parser would give a component that reads files the
+	// ability to write the archive.
+	Content []byte `json:"-"`
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Urenzu/trace-portal/internal/trace"
@@ -44,6 +45,31 @@ type ClaudeCode struct {
 	root     string
 	coverage *Coverage
 	projects *projectResolver
+
+	// content captures what was actually said and done -- prompts, assistant
+	// text and thinking, tool arguments and tool results -- alongside the
+	// measurements. Off by default in this type; the binary turns it on, and
+	// see CaptureContent for why it is not a decision this package makes.
+	content bool
+
+	// maxContent bounds one captured block. Zero means DefaultMaxContent.
+	maxContent int
+}
+
+// CaptureContent turns content capture on and bounds each captured block.
+//
+// This is a switch rather than plain behaviour because it changes what the
+// archive holds from measurements about somebody's work into the work itself:
+// their prompts, their source code, whatever a tool printed. That is the point
+// -- a turn's cost is not much use without being able to see what the turn did
+// -- but it is a decision the person running the tool makes, not one this
+// parser makes on their behalf.
+//
+// It is also the thing with a deadline. Claude Code prunes its transcripts
+// after about a month, so every day this is off is a day of tool inputs and
+// outputs that no later build can recover.
+func (c *ClaudeCode) CaptureContent(on bool, max int) {
+	c.content, c.maxContent = on, max
 }
 
 // NewClaudeCode reads from root, defaulting to ~/.claude/projects.
@@ -108,6 +134,18 @@ type ccContentBlock struct {
 	Type string `json:"type"`
 	ID   string `json:"id"`
 	Name string `json:"name"`
+
+	// Filled only when content capture is on -- and at no cost when it is not,
+	// since encoding/json simply does not reach these fields for block types
+	// that do not carry them.
+	Text     string          `json:"text"`
+	Thinking string          `json:"thinking"`
+	Input    json.RawMessage `json:"input"`
+
+	// Tool results.
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
 }
 
 type ccUsage struct {
@@ -143,6 +181,13 @@ func (c *ClaudeCode) Parse(path string, from int64, emit Emit) (int64, error) {
 			// from hiding among ordinary format drift.
 			c.coverage.skip(true)
 			return nil
+		}
+		if rec.Type == "user" {
+			if !c.content {
+				c.coverage.skip(false)
+				return nil
+			}
+			return c.emitToolResults(rec, emit)
 		}
 		if rec.Type != "assistant" {
 			c.coverage.skip(false)
@@ -236,8 +281,8 @@ func (c *ClaudeCode) Parse(path string, from int64, emit Emit) (int64, error) {
 		}
 		ev.Usage = &usage
 
-		// Decode content only now, and only far enough to find tool calls. A
-		// shape this build does not expect costs the tool list, not the turn.
+		// Decode content only now. A shape this build does not expect costs the
+		// tool list and the captured text, not the turn.
 		var blocks []ccContentBlock
 		if err := json.Unmarshal(rec.Message.Content, &blocks); err == nil {
 			for _, block := range blocks {
@@ -249,8 +294,164 @@ func (c *ClaudeCode) Parse(path string, from int64, emit Emit) (int64, error) {
 			c.coverage.missing("tool_calls")
 		}
 		c.coverage.record(rec.Version)
-		return emit(ev)
+		if err := emit(ev); err != nil {
+			return err
+		}
+		if !c.content {
+			return nil
+		}
+		return c.emitBlocks(rec, ev, blocks, emit)
 	})
+}
+
+// emitBlocks records what an assistant record actually said.
+//
+// One event per block rather than one per record, because a block is the unit
+// the transcript writes and the unit a reader wants back: a turn that thought,
+// answered and then called a tool is three separate things, and flattening them
+// into one payload would lose the order they happened in.
+//
+// Every block carries the turn's message id, so these land on the same turn as
+// the measurement they belong to and no join is needed to find them.
+func (c *ClaudeCode) emitBlocks(rec ccRecord, turn trace.Event, blocks []ccContentBlock, emit Emit) error {
+	for _, block := range blocks {
+		var content trace.Content
+		switch block.Type {
+		case "text":
+			if block.Text == "" {
+				continue
+			}
+			content.Kind, content.Text = trace.ContentText, block.Text
+		case "thinking":
+			if block.Thinking == "" {
+				continue
+			}
+			// The signature is deliberately dropped. It is about a kilobyte of
+			// base64 per block that proves the thinking came from the API, and
+			// nothing downstream verifies it -- keeping it would make it the
+			// single largest thing content capture stored, in service of
+			// nothing.
+			content.Kind, content.Text = trace.ContentThinking, block.Thinking
+		case "tool_use":
+			content.Kind = trace.ContentToolUse
+			content.Tool, content.Name, content.Input = block.ID, block.Name, block.Input
+		default:
+			// A block type this build has never seen. Counted rather than
+			// guessed at, so the gap shows up as a gap.
+			c.coverage.missing("content_" + block.Type)
+			continue
+		}
+
+		payload, err := capture(content, c.maxContent)
+		if err != nil {
+			c.coverage.missing("content_encode")
+			continue
+		}
+		if err := emit(trace.Event{
+			Type:        trace.EventContent,
+			Source:      ClaudeCodeName,
+			Timestamp:   turn.Timestamp,
+			SessionID:   turn.SessionID,
+			TurnID:      turn.TurnID,
+			MessageID:   turn.MessageID,
+			ContentKind: content.Kind,
+			ToolUseID:   content.Tool,
+			Content:     payload,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// emitToolResults records what a tool returned.
+//
+// Results arrive in their own user record, after the turn that made the call
+// has already been written, and they carry no message id -- the API never
+// issued one, because the result is something the harness produced rather than
+// something the model said. They are keyed by the tool_use id, which the call
+// and the result both carry, and paired with their turn when turns are built.
+func (c *ClaudeCode) emitToolResults(rec ccRecord, emit Emit) error {
+	if rec.Message == nil || len(rec.Message.Content) == 0 {
+		c.coverage.skip(false)
+		return nil
+	}
+	var blocks []ccContentBlock
+	if err := json.Unmarshal(rec.Message.Content, &blocks); err != nil {
+		// A bare string, which is how a typed prompt is written. Not a result,
+		// and not what this pass is looking for.
+		c.coverage.skip(false)
+		return nil
+	}
+
+	emitted := false
+	for _, block := range blocks {
+		if block.Type != "tool_result" || block.ToolUseID == "" {
+			continue
+		}
+		payload, err := capture(trace.Content{
+			Kind:    trace.ContentToolResult,
+			Tool:    block.ToolUseID,
+			Text:    resultText(block.Content),
+			IsError: block.IsError,
+		}, c.maxContent)
+		if err != nil {
+			c.coverage.missing("content_encode")
+			continue
+		}
+		if err := emit(trace.Event{
+			Type:      trace.EventContent,
+			Source:    ClaudeCodeName,
+			Timestamp: parseTimestamp(rec.Timestamp),
+			SessionID: sessionOr(rec.SessionID),
+			// The record's own uuid, so an event is traceable back to the line
+			// it came from. It is not a turn key: results are placed by their
+			// tool_use id, not by this.
+			TurnID:      rec.UUID,
+			ContentKind: trace.ContentToolResult,
+			ToolUseID:   block.ToolUseID,
+			Content:     payload,
+		}); err != nil {
+			return err
+		}
+		emitted = true
+	}
+	if !emitted {
+		c.coverage.skip(false)
+	}
+	return nil
+}
+
+// resultText renders a tool result, which the transcript writes either as a
+// plain string or as an array of content blocks.
+func resultText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	var blocks []ccContentBlock
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		var out []string
+		for _, b := range blocks {
+			if b.Text != "" {
+				out = append(out, b.Text)
+			}
+		}
+		return strings.Join(out, "\n")
+	}
+	// Neither shape. Keep the raw JSON rather than nothing: a result this build
+	// cannot read is still what the agent was told.
+	return string(raw)
+}
+
+func sessionOr(id string) string {
+	if id != "" {
+		return id
+	}
+	return "unknown"
 }
 
 // errorEvent turns a failed call into a trace event. Status is parsed where the

@@ -188,6 +188,21 @@ class ApiError extends Error {
   }
 }
 
+// signIn sends the browser through the sign-in flow and back to this page.
+//
+// Guarded, because a dashboard fires several requests at once and every one of
+// them will come back 401. Without the latch the first response starts a
+// navigation and the rest keep restarting it.
+let signingIn = false;
+
+function signIn() {
+  if (signingIn) return;
+  signingIn = true;
+  const here =
+    window.location.pathname + window.location.search + window.location.hash;
+  window.location.assign(`/auth/login?return=${encodeURIComponent(here)}`);
+}
+
 async function get<T>(
   path: string,
   params: Record<string, string | number | undefined> = {},
@@ -199,6 +214,15 @@ async function get<T>(
   }
 
   const resp = await fetch(url);
+  if (resp.status === 401) {
+    // The server holds many accounts and this browser is not signed in to one.
+    // Nothing on the page can be filled in, and every other panel is about to
+    // get the same answer, so go and sign in rather than render six copies of
+    // the same error. A server with no identity provider never returns this:
+    // there is one archive and it answers everybody.
+    signIn();
+    throw new ApiError("not signed in", 401);
+  }
   if (!resp.ok) {
     // The API reports failures as {"error": "..."}; fall back to the status
     // text when the body is not the shape we expect.

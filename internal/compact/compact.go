@@ -208,6 +208,40 @@ func (c *Compactor) CompactAll() (int, error) {
 	return written, nil
 }
 
+// RecompactAll rebuilds every day's partition from the hot window, whether or
+// not one already exists.
+//
+// For the case where the hot window has learned something the partitions were
+// written without -- today that is content capture, read back out of
+// transcripts that had already been consumed. A partition is authoritative for
+// its day, so without this the re-read would sit in the window being correct
+// and never be served, and on a server the prune sweep would then delete it.
+func (c *Compactor) RecompactAll() (int, error) {
+	days, err := c.store.Days(storeContext())
+	if err != nil {
+		return 0, err
+	}
+	var written int
+	for _, day := range days {
+		ok, err := c.CompactDay(day, true)
+		if err != nil {
+			return written, err
+		}
+		if ok {
+			written++
+		}
+	}
+	if err := c.RebuildIndex(); err != nil {
+		return written, err
+	}
+	if c.prune {
+		if err := c.pruneHotWindow(); err != nil {
+			return written, err
+		}
+	}
+	return written, nil
+}
+
 func (c *Compactor) hasIndex() bool {
 	for _, name := range []string{dayFile, sessionsFile} {
 		ok, err := c.objects.Exists(storeContext(), c.indexKey(name))
@@ -283,6 +317,7 @@ func toRow(t query.Turn) TurnRow {
 		Error:        t.Error,
 		Pending:      t.Pending,
 	}
+	row.ContentBlobs = t.ContentBlobs
 	for _, tc := range t.ToolCalls {
 		row.ToolCalls = append(row.ToolCalls, tc.Name)
 	}
@@ -328,6 +363,7 @@ func FromRow(r TurnRow) query.Turn {
 		Error:        r.Error,
 		Pending:      r.Pending,
 	}
+	t.ContentBlobs = r.ContentBlobs
 	for _, name := range r.ToolCalls {
 		t.ToolCalls = append(t.ToolCalls, trace.ToolCall{Name: name})
 	}

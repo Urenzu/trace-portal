@@ -72,8 +72,17 @@ type TurnRow struct {
 
 	RequestBlob  string `parquet:"request_blob"`
 	ResponseBlob string `parquet:"response_blob"`
-	Error        string `parquet:"error"`
-	Pending      bool   `parquet:"pending"`
+
+	// ContentBlobs reference what was said and done in this turn. References
+	// only: the column holds a handful of hashes per turn and dictionary-
+	// encodes the repeated ones, so a partition stays the size it was whether
+	// or not content was captured. It has to be here rather than only on the
+	// events, because on a server the events are dropped once the day is
+	// compacted -- a reference that lived only there would be unreachable
+	// while the blob it names sat in storage forever.
+	ContentBlobs []string `parquet:"content_blobs"`
+	Error        string   `parquet:"error"`
+	Pending      bool     `parquet:"pending"`
 }
 
 // DayRow is the single pre-aggregated row per day. The stats dashboard reads
