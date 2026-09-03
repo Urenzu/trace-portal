@@ -3,7 +3,6 @@ package trace
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"path/filepath"
 	"strings"
 )
 
@@ -22,9 +21,13 @@ func Project(dir string) string {
 	if dir == "" {
 		return ""
 	}
-	base := filepath.Base(filepath.FromSlash(dir))
+	// Split on both separators explicitly rather than with path/filepath,
+	// whose separator is the *server's* OS -- a transcript can carry a
+	// Windows path onto a Linux server, or the reverse, and either style
+	// must reduce the same way regardless of where this code runs.
+	base := dir[strings.LastIndexAny(dir, `/\`)+1:]
 	// A drive or filesystem root reduces to nothing meaningful.
-	if base == "." || base == string(filepath.Separator) || strings.HasSuffix(base, ":") {
+	if base == "" || strings.HasSuffix(base, ":") {
 		return ""
 	}
 	return base
@@ -40,7 +43,9 @@ func ProjectID(dir string) string {
 	}
 	// Normalize separators and case so the same project keeps one id whether it
 	// was recorded from a shell using forward slashes or a native Windows path.
-	norm := strings.ToLower(filepath.ToSlash(dir))
+	// Explicit, not path/filepath.ToSlash, for the same cross-OS reason as
+	// Project above.
+	norm := strings.ToLower(strings.NewReplacer(`\`, "/").Replace(dir))
 	sum := sha256.Sum256([]byte(norm))
 	return hex.EncodeToString(sum[:])[:projectIDLength]
 }
