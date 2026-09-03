@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+
+    # Postgres as a GitHub Actions service container: the runner starts it
+    # before any step runs and tears it down after, on the ports/health-check
+    # given here. Credentials and the "5432" port match docker-compose.yml's
+    # postgres service (that file remaps to 5433 only on the *host* side, to
+    # avoid colliding with a developer's local Postgres -- the runner has no
+    # such collision, so it stays on the default port).
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: trace
+          POSTGRES_PASSWORD: trace
+          POSTGRES_DB: trace_portal
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trace -d trace_portal"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # MinIO isn't run as a `services:` container: that mechanism can't
+      # override a container's command, and the official minio/minio image
+      # needs `server /data` passed explicitly or it just prints help and
+      # exits. A plain `docker run` gives the same control docker-compose.yml
+      # has, with the same credentials the object-store tests default to.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=trace -e MINIO_ROOT_PASSWORD=tracetrace \
+            minio/minio server /data
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/ready && break
+            sleep 1
+          done
+
+      - name: gofmt
+        run: |
+          fmt="$(gofmt -l .)"
+          if [ -n "$fmt" ]; then
+            echo "gofmt needs to be run on:"
+            echo "$fmt"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test -short ./...
+        env:
+          TRACE_PORTAL_TEST_POSTGRES: postgres://trace:trace@localhost:5432/trace_portal?sslmode=disable
+          TRACE_PORTAL_TEST_S3: localhost:9000
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      # No test script exists yet; `build` runs `tsc -b` first, so it is also
+      # the type-check that currently guards this package.
+      - run: npm run build
